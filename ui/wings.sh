@@ -55,6 +55,13 @@ export CONFIGURE_RUSTIC=true
 # Auto-create a node + write Elytra config when a local panel is detected
 export CONFIGURE_LOCAL_NODE=false
 
+# Remote panel auto-configuration (separate-machine install)
+export PANEL_URL=""
+export PANEL_API_KEY=""
+
+# Optionally create a sample Minecraft server on the new node (best-effort)
+export CONFIGURE_MC_SERVER=false
+
 # Database host
 export CONFIGURE_DBHOST=false
 export CONFIGURE_DB_FIREWALL=false
@@ -138,6 +145,40 @@ ask_local_node() {
   true
 }
 
+ask_remote_panel() {
+  # Only relevant when the panel is on a different machine.
+  [ -d "/var/www/pyrodactyl" ] && return 0
+
+  output "If your Pyrodactyl panel is on another machine, this node can be configured"
+  output "automatically using the panel URL and an application API key (the panel"
+  output "installer prints/saves one)."
+  echo -e -n "* Auto-configure this node from a remote panel now? (y/N): "
+  read -r CONFIRM_REMOTE
+  [[ "$CONFIRM_REMOTE" =~ [Yy] ]] || return 0
+
+  while [ -z "$PANEL_URL" ]; do
+    echo -n "* Panel URL (e.g. https://panel.example.com): "
+    read -r PANEL_URL
+  done
+  while [ -z "$PANEL_API_KEY" ]; do
+    echo -n "* Panel application API key (pyro_...): "
+    read -r PANEL_API_KEY
+  done
+  export PANEL_URL PANEL_API_KEY
+}
+
+ask_mc_server() {
+  # Only meaningful if a node will actually be set up (local or remote).
+  { [ "$CONFIGURE_LOCAL_NODE" == true ] || [ -n "$PANEL_API_KEY" ]; } || return 0
+
+  output "Optionally create a sample Minecraft server on the new node (best-effort)."
+  echo -e -n "* Create a sample Minecraft server? (y/N): "
+  read -r CONFIRM_MC
+
+  [[ "$CONFIRM_MC" =~ [Yy] ]] && CONFIGURE_MC_SERVER=true
+  true
+}
+
 ####################
 ## MAIN FUNCTIONS ##
 ####################
@@ -174,6 +215,8 @@ main() {
   ask_rustic
 
   ask_local_node
+  ask_remote_panel
+  ask_mc_server
 
   ask_database_user
 

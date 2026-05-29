@@ -1,13 +1,56 @@
 # -*- mode: ruby -*-
 # vi: set ft=ruby :
 
+# Which installer to run during the `test-install` provisioner.
+# Override on the CLI, e.g.:
+#   TEST_TARGET=both vagrant up ubuntu_noble --provision-with test-install
+TEST_TARGET = ENV.fetch("TEST_TARGET", "panel")
+
 Vagrant.configure("2") do |config|
   # "public" network so that we can access the panel interface
   config.vm.network "public_network"
 
-  # Provision a symbolic link to the shared script
+  # Always (re)create the symlink to the shared lib script.
+  # /tmp is wiped on reboot, and installers/*.sh source /tmp/pyrodactyl-lib.sh.
+  # `run: "always"` makes this fire on every `vagrant up`, not just first boot.
   config.vm.provision "shell",
-    inline: "ln -sf /vagrant/lib/lib.sh /tmp/lib.sh"
+    name: "link-lib",
+    run: "always",
+    inline: "ln -sf /vagrant/lib/lib.sh /tmp/pyrodactyl-lib.sh"
+
+  # Opt-in provisioner that drives a full, non-interactive install.
+  # Usage:
+  #   vagrant up <name>                                  # just brings the box up
+  #   vagrant up <name> --provision-with test-install    # brings it up AND installs
+  #   vagrant provision <name> --provision-with test-install  # re-run on existing box
+  config.vm.provision "test-install",
+    type: "shell",
+    run: "never",
+    privileged: true,
+    env: { "TEST_TARGET" => TEST_TARGET },
+    inline: <<~SHELL
+      set -e
+      ln -sf /vagrant/lib/lib.sh /tmp/pyrodactyl-lib.sh
+      bash /vagrant/scripts/vagrant/vagrant_test_installer.sh "$TEST_TARGET"
+    SHELL
+
+  # Opt-in interactive test: boots the SAME menu as install.sh (defined once in
+  # lib/lib.sh as `main_menu`) and walks every prompt, then installs. It needs a
+  # real TTY, so the reliable way is to SSH in and run it by hand:
+  #   vagrant up <name>
+  #   vagrant ssh <name>
+  #   sudo /vagrant/scripts/vagrant/vagrant_test_interactive.sh
+  # The provisioner below is a convenience for providers that forward stdin:
+  #   vagrant provision <name> --provision-with test-interactive
+  config.vm.provision "test-interactive",
+    type: "shell",
+    run: "never",
+    privileged: true,
+    inline: <<~SHELL
+      set -e
+      ln -sf /vagrant/lib/lib.sh /tmp/pyrodactyl-lib.sh
+      bash /vagrant/scripts/vagrant/vagrant_test_interactive.sh
+    SHELL
 
   # Define Ubuntu VMs
   config.vm.define "ubuntu_noble" do |ubuntu_noble|

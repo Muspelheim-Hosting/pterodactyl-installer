@@ -55,6 +55,16 @@ CONFIGURE_RUSTIC="${CONFIGURE_RUSTIC:-true}"
 CONFIGURE_LOCAL_NODE="${CONFIGURE_LOCAL_NODE:-false}"
 PANEL_DIR="${PANEL_DIR:-/var/www/pyrodactyl}"
 
+# Remote panel (separate-machine) auto-configuration via the panel API
+PANEL_URL="${PANEL_URL:-}"
+PANEL_API_KEY="${PANEL_API_KEY:-}"
+PANEL_SCHEME="${PANEL_SCHEME:-http}"
+
+# Optionally create a sample Minecraft server on the new node (best-effort).
+# The egg id depends on the panel's seeded eggs (Pyrodactyl's Vanilla egg is 8).
+CONFIGURE_MC_SERVER="${CONFIGURE_MC_SERVER:-false}"
+CONFIGURE_MC_EGG="${CONFIGURE_MC_EGG:-8}"
+
 # Database host
 CONFIGURE_DBHOST="${CONFIGURE_DBHOST:-false}"
 CONFIGURE_DB_FIREWALL="${CONFIGURE_DB_FIREWALL:-false}"
@@ -271,12 +281,21 @@ setup_local_node() {
   output "Configuring a local node via the panel.."
   cd "$PANEL_DIR" || return 0
 
-  # Derive panel DB name, node fqdn and scheme from the panel's .env
+  # Prefer the facts the panel installer saved ($INSTALL_INFO_DIR/panel-info);
+  # fall back to parsing the panel's .env if that file isn't present.
   local panel_db app_url scheme node_fqdn
-  panel_db=$(grep -E '^DB_DATABASE=' .env | head -n1 | cut -d= -f2- | tr -d '"' )
+  load_panel_info || true
+  panel_db="${MYSQL_DB:-}"
+  app_url="${PANEL_URL:-}"
+  scheme="${PANEL_SCHEME:-}"
+
+  [ -z "$panel_db" ] && panel_db=$(grep -E '^DB_DATABASE=' .env | head -n1 | cut -d= -f2- | tr -d '"')
   [ -z "$panel_db" ] && panel_db="panel"
-  app_url=$(grep -E '^APP_URL=' .env | head -n1 | cut -d= -f2- | tr -d '"' )
-  scheme="${app_url%%://*}"; [ "$scheme" == "https" ] || scheme="http"
+  [ -z "$app_url" ] && app_url=$(grep -E '^APP_URL=' .env | head -n1 | cut -d= -f2- | tr -d '"')
+  if [ -z "$scheme" ]; then
+    scheme="${app_url%%://*}"
+    [ "$scheme" == "https" ] || scheme="http"
+  fi
   node_fqdn="${app_url#*://}"; node_fqdn="${node_fqdn%%/*}"
   [ -z "$node_fqdn" ] && node_fqdn="$(get_primary_ip)"
 
@@ -285,12 +304,15 @@ setup_local_node() {
   mem=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}'); [ -z "$mem" ] && mem=4096
   disk=$(df -Pm /var/lib 2>/dev/null | awk 'NR==2{print $2}'); [ -z "$disk" ] && disk=20480
 
-  # Location (idempotent)
-  if ! mariadb -u root -D "$panel_db" -N -B -e "SELECT id FROM locations WHERE short='local' LIMIT 1;" 2>/dev/null | grep -q .; then
-    php artisan p:location:make --short=local --long=Local -n </dev/null || warning "Could not create location"
+  # Location: short code from the server's country (IP geolocation), falling back to
+  # "local". Idempotent.
+  local loc_short
+  loc_short=$(get_server_country_code)
+  if ! mariadb -u root -D "$panel_db" -N -B -e "SELECT id FROM locations WHERE short='$loc_short' LIMIT 1;" 2>/dev/null | grep -q .; then
+    php artisan p:location:make --short="$loc_short" --long="$loc_short" -n </dev/null || warning "Could not create location"
   fi
   local location_id
-  location_id=$(mariadb -u root -D "$panel_db" -N -B -e "SELECT id FROM locations WHERE short='local' LIMIT 1;" 2>/dev/null)
+  location_id=$(mariadb -u root -D "$panel_db" -N -B -e "SELECT id FROM locations WHERE short='$loc_short' LIMIT 1;" 2>/dev/null)
 
   # Node (idempotent)
   if ! mariadb -u root -D "$panel_db" -N -B -e "SELECT id FROM nodes WHERE name='local' LIMIT 1;" 2>/dev/null | grep -q .; then
@@ -313,6 +335,7 @@ setup_local_node() {
     warning "Node creation failed; configure the node manually from the panel."
     return 0
   fi
+  export NODE_ID="$node_id"
 
   # Allocations: ports 25500-25600, ip 0.0.0.0
   output "Adding allocations (ports 25500-25600) to node $node_id.."
@@ -336,6 +359,52 @@ setup_local_node() {
   fi
 }
 
+# When the panel is on a DIFFERENT machine, use its API (app key) to create the
+# node, then let `elytra configure` pull the config. fqdn = this machine.
+auto_configure_via_api() {
+  { [ -n "$PANEL_URL" ] && [ -n "$PANEL_API_KEY" ]; } || return 0
+
+  output "Auto-configuring this node against the panel at $PANEL_URL.."
+  command -v jq >/dev/null 2>&1 || install_packages "jq"
+
+  # Node fqdn = this server; scheme http unless an SSL cert/LE is being set up here.
+  local node_fqdn scheme mem disk location_id node_id
+  node_fqdn="${FQDN:-$(get_primary_ip)}"
+  scheme="http"; [ "$CONFIGURE_LETSENCRYPT" == true ] && scheme="https"
+  mem=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}'); [ -z "$mem" ] && mem=4096
+  disk=$(df -Pm /var/lib 2>/dev/null | awk 'NR==2{print $2}'); [ -z "$disk" ] && disk=20480
+
+  output "Creating location via the panel API.."
+  if ! location_id=$(get_or_create_location "$PANEL_API_KEY" "$PANEL_URL" "$(get_server_country_code)"); then
+    warning "Could not create a location; configure the node manually from the panel."
+    return 0
+  fi
+
+  output "Creating node via the panel API.."
+  if ! node_id=$(create_node_via_api "$PANEL_API_KEY" "$PANEL_URL" "$location_id" "$(hostname -s)" "$mem" "$disk" "$scheme" "$node_fqdn"); then
+    warning "Could not create the node; configure it manually from the panel."
+    return 0
+  fi
+  export NODE_ID="$node_id"
+
+  output "Configuring Elytra (elytra configure).."
+  if (cd /etc/elytra && elytra configure --panel-url "$PANEL_URL" --token "$PANEL_API_KEY" --node "$node_id"); then
+    success "Elytra configured for node $node_id ($scheme://$node_fqdn)."
+  else
+    warning "elytra configure failed; use the panel's auto-deploy command to configure manually."
+    return 0
+  fi
+
+  output "Adding allocations (ports 25500-25600).."
+  create_node_allocations "$PANEL_API_KEY" "$PANEL_URL" "$node_id" "0.0.0.0" 25500 25600
+
+  if [ "$scheme" == "http" ]; then
+    systemctl restart elytra && success "Elytra started."
+  else
+    warning "Node uses https; install a TLS certificate for $node_fqdn, then: systemctl start elytra"
+  fi
+}
+
 # --------------- Main functions --------------- #
 
 perform_install() {
@@ -347,7 +416,18 @@ perform_install() {
   systemd_file
   [ "$CONFIGURE_DBHOST" == true ] && configure_mysql
   [ "$CONFIGURE_LETSENCRYPT" == true ] && letsencrypt
-  setup_local_node
+
+  # Node setup: same-machine uses artisan directly; separate-machine uses the panel API.
+  if [ "$CONFIGURE_LOCAL_NODE" == true ]; then
+    setup_local_node
+  else
+    auto_configure_via_api
+  fi
+
+  # Optional best-effort sample Minecraft server (needs a node + panel API key).
+  if [ "$CONFIGURE_MC_SERVER" == true ] && [ -n "${NODE_ID:-}" ] && [ -n "${PANEL_URL:-}" ] && [ -n "${PANEL_API_KEY:-}" ]; then
+    create_mc_server "$PANEL_API_KEY" "$PANEL_URL" "$NODE_ID" "$CONFIGURE_MC_EGG"
+  fi
 
   return 0
 }

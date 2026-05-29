@@ -64,6 +64,10 @@ export GITHUB_URL="${GITHUB_URL:-$GITHUB_BASE_URL/$GITHUB_SOURCE}"
 # Install log (override before sourcing to change it)
 export LOG_PATH="${LOG_PATH:-/var/log/pyrodactyl-installer.log}"
 
+# Where the panel install records facts (panel URL, DB, API key) for the Elytra
+# install to pick up. Contains a secret API key, so it is mode 0600.
+export INSTALL_INFO_DIR="${INSTALL_INFO_DIR:-/var/lib/pyrodactyl-installer}"
+
 # Colors
 COLOR_YELLOW='\033[1;33m'
 COLOR_GREEN='\033[0;32m'
@@ -284,6 +288,217 @@ get_primary_ip() {
   ip=$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \([0-9.]*\).*/\1/p' | head -n1)
   [ -z "$ip" ] && ip=$(hostname -I 2>/dev/null | awk '{print $1}')
   echo "${ip:-127.0.0.1}"
+}
+
+# ---- Cross-installer handoff: the panel install writes facts the Elytra install reads ----
+
+# Persist the panel facts the Elytra installer needs (URL, scheme, DB, API key).
+save_panel_info() {
+  mkdir -p "$INSTALL_INFO_DIR"
+  chmod 700 "$INSTALL_INFO_DIR"
+
+  local f="$INSTALL_INFO_DIR/panel-info"
+  {
+    echo "# Pyrodactyl panel install info — consumed by the Elytra installer. Keep secret."
+    echo "# Generated: $(date)"
+    echo "PANEL_FQDN=\"${FQDN:-}\""
+    echo "PANEL_SCHEME=\"${PANEL_SCHEME:-http}\""
+    echo "PANEL_URL=\"${PANEL_URL:-}\""
+    echo "PANEL_DIR=\"${PANEL_DIR:-/var/www/pyrodactyl}\""
+    echo "MYSQL_DB=\"${MYSQL_DB:-panel}\""
+    echo "PANEL_API_KEY=\"${PANEL_API_KEY:-}\""
+  } >"$f"
+  chmod 600 "$f"
+}
+
+# Source the panel info file (sets PANEL_URL, PANEL_API_KEY, ...). Returns 1 if absent.
+load_panel_info() {
+  [ -f "$INSTALL_INFO_DIR/panel-info" ] || return 1
+  # shellcheck source=/dev/null
+  source "$INSTALL_INFO_DIR/panel-info"
+}
+
+# Generate a Pyrodactyl application API key for the first admin user; echoes the key.
+# Runs against the panel checkout at $1 (default /var/www/pyrodactyl). Returns 1 on failure.
+generate_api_key() {
+  local dir="${1:-/var/www/pyrodactyl}"
+  [ -f "$dir/artisan" ] || return 1
+
+  local key
+  key=$(cd "$dir" && php artisan tinker --execute='
+    use Pterodactyl\Models\ApiKey;
+    use Pterodactyl\Models\User;
+    use Pterodactyl\Services\Api\KeyCreationService;
+    $user = User::where("root_admin", true)->first();
+    if (!$user) { exit(1); }
+    ApiKey::query()->where("user_id", $user->id)->where("memo", "pyrodactyl-installer")->delete();
+    $k = app(KeyCreationService::class)->setKeyType(ApiKey::TYPE_APPLICATION)->handle(
+      ["user_id" => $user->id, "memo" => "pyrodactyl-installer", "allowed_ips" => []],
+      ["r_servers"=>3,"r_nodes"=>3,"r_allocations"=>3,"r_users"=>3,"r_locations"=>3,"r_nests"=>3,"r_eggs"=>3,"r_database_hosts"=>3,"r_server_databases"=>3]
+    );
+    echo $k->identifier . decrypt($k->token);
+  ' 2>/dev/null | tr -d '[:space:]')
+
+  # A Pyrodactyl application key is 48 chars (pyro_ + 16 identifier + 32 token)
+  [ "${#key}" -ge 40 ] || return 1
+  echo "$key"
+}
+
+# Determine a panel location short code from the server's country, via IP geolocation.
+# Tries ipapi.co -> ipinfo.io -> ifconfig.co; falls back to "local" (e.g. offline installs).
+get_server_country_code() {
+  local cc
+
+  cc=$(curl -s --max-time 10 "https://ipapi.co/country_code/" 2>/dev/null || true)
+  if [ -z "$cc" ] || echo "$cc" | grep -qiE 'error|ratelimited'; then
+    cc=$(curl -s --max-time 10 "https://ipinfo.io/country" 2>/dev/null || true)
+  fi
+  if [ -z "$cc" ] || echo "$cc" | grep -qiE 'error|ratelimited'; then
+    cc=$(curl -s --max-time 10 "https://ifconfig.co/country-iso" 2>/dev/null || true)
+  fi
+
+  cc=$(echo "$cc" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+  if [[ "$cc" =~ ^[A-Z]{2}$ ]]; then
+    echo "$cc"
+  else
+    echo "local"
+  fi
+}
+
+# ---- Panel REST helpers (require jq + an application API key). Used for remote node setup. ----
+
+# Echo a location id for short code $3, creating the location if it doesn't exist.
+get_or_create_location() {
+  local api_key="$1" panel_url="$2" short="$3"
+  local resp code id
+
+  resp=$(curl -s -w '\n%{http_code}' \
+    -H "Authorization: Bearer $api_key" \
+    -H "Accept: Application/vnd.pterodactyl.v1+json" \
+    "$panel_url/api/application/locations")
+  code=$(echo "$resp" | tail -n1); resp=$(echo "$resp" | sed '$d')
+
+  if [ "$code" == "200" ]; then
+    id=$(echo "$resp" | jq -r --arg s "$short" '.data[] | select(.attributes.short==$s) | .attributes.id' 2>/dev/null | head -1)
+    [ -n "$id" ] && [ "$id" != "null" ] && { echo "$id"; return 0; }
+  fi
+
+  resp=$(curl -s -w '\n%{http_code}' -X POST \
+    -H "Authorization: Bearer $api_key" \
+    -H "Accept: Application/vnd.pterodactyl.v1+json" \
+    -H "Content-Type: application/json" \
+    -d "{\"short\":\"$short\",\"long\":\"$short\"}" \
+    "$panel_url/api/application/locations")
+  resp=$(echo "$resp" | sed '$d')
+  echo "$resp" | grep -q '"object":"location"' && { echo "$resp" | jq -r '.attributes.id'; return 0; }
+  return 1
+}
+
+# Echo a node id, creating the node. Args: api_key panel_url location_id name mem_mb disk_mb scheme fqdn
+create_node_via_api() {
+  local api_key="$1" panel_url="$2" location_id="$3" name="$4" mem="$5" disk="$6" scheme="$7" fqdn="$8"
+  local body resp code
+
+  body=$(jq -n \
+    --arg name "$name" --arg desc "Auto-created by pyrodactyl-installer" \
+    --argjson loc "$location_id" --arg fqdn "$fqdn" --arg scheme "$scheme" \
+    --argjson mem "$mem" --argjson disk "$disk" \
+    '{name:$name, description:$desc, location_id:$loc, fqdn:$fqdn, scheme:$scheme, behind_proxy:false, public:true, daemon_type:"elytra", memory:$mem, memory_overallocate:0, disk:$disk, disk_overallocate:0, upload_size:100, daemon_listen:8080, daemon_sftp:2022, maintenance_mode:false}')
+
+  resp=$(curl -s -w '\n%{http_code}' -X POST \
+    -H "Authorization: Bearer $api_key" \
+    -H "Accept: Application/vnd.pterodactyl.v1+json" \
+    -H "Content-Type: application/json" \
+    -d "$body" "$panel_url/api/application/nodes")
+  code=$(echo "$resp" | tail -n1); resp=$(echo "$resp" | sed '$d')
+
+  if echo "$resp" | grep -q '"object":"node"'; then
+    echo "$resp" | jq -r '.attributes.id'
+    return 0
+  fi
+  error "Node creation failed (HTTP $code): $(echo "$resp" | jq -r '.errors[0].detail // .message // "unknown error"' 2>/dev/null)" >&2
+  return 1
+}
+
+# Create a port-range allocation on a node. Args: api_key panel_url node_id ip start end
+create_node_allocations() {
+  local api_key="$1" panel_url="$2" node_id="$3" ip="${4:-0.0.0.0}" start="${5:-25500}" end="${6:-25600}"
+  curl -s -o /dev/null -X POST \
+    -H "Authorization: Bearer $api_key" \
+    -H "Accept: Application/vnd.pterodactyl.v1+json" \
+    -H "Content-Type: application/json" \
+    -d "{\"ip\":\"$ip\",\"ports\":[\"$start-$end\"]}" \
+    "$panel_url/api/application/nodes/$node_id/allocations"
+}
+
+# Best-effort: create a sample Minecraft server on $node_id via the panel API.
+# Args: api_key panel_url node_id [egg_id]. The egg id depends on the panel's seeded
+# eggs (Pyrodactyl's default Vanilla egg is 8); override with the 4th arg if needed.
+# Any failure is non-fatal — it warns and returns 0.
+create_mc_server() {
+  local api_key="$1" panel_url="$2" node_id="$3" egg="${4:-8}"
+
+  if ! cmd_exists jq; then install_packages "jq"; fi
+
+  # Wait for the application API to come up (panel may still be warming up).
+  local i ready=false
+  for i in $(seq 1 20); do
+    if curl -fsS -H "Authorization: Bearer $api_key" -H "Accept: Application/vnd.pterodactyl.v1+json" \
+      "$panel_url/api/application/users" >/dev/null 2>&1; then
+      ready=true
+      break
+    fi
+    sleep 3
+  done
+  if [ "$ready" != true ]; then
+    warning "Panel API did not respond; skipping the sample Minecraft server."
+    return 0
+  fi
+
+  # First free allocation on the node.
+  local alloc
+  alloc=$(curl -s -H "Authorization: Bearer $api_key" -H "Accept: Application/vnd.pterodactyl.v1+json" \
+    "$panel_url/api/application/nodes/$node_id/allocations" \
+    | jq -r 'first(.data[] | select(.attributes.assigned==false) | .attributes.id) // empty' 2>/dev/null)
+  if [ -z "$alloc" ]; then
+    warning "No free allocation on node $node_id; skipping the sample Minecraft server."
+    return 0
+  fi
+
+  # First admin user id (fallback 1).
+  local uid
+  uid=$(curl -s -H "Authorization: Bearer $api_key" -H "Accept: Application/vnd.pterodactyl.v1+json" \
+    "$panel_url/api/application/users" \
+    | jq -r 'first(.data[] | select(.attributes.root_admin==true) | .attributes.id) // empty' 2>/dev/null)
+  [ -z "$uid" ] && uid=1
+
+  output "Creating a sample Minecraft server (egg $egg) on node $node_id.."
+  local body resp
+  body=$(jq -n --argjson user "$uid" --argjson egg "$egg" --argjson alloc "$alloc" '{
+    name: "Minecraft Server",
+    user: $user,
+    egg: $egg,
+    docker_image: "ghcr.io/pterodactyl/yolks:java_17",
+    startup: "java -Xms128M -Xmx{{SERVER_MEMORY}}M -jar {{SERVER_JARFILE}}",
+    environment: { SERVER_JARFILE: "server.jar", VANILLA_VERSION: "latest" },
+    limits: { memory: 2048, swap: 0, disk: 8192, io: 500, cpu: 0 },
+    feature_limits: { databases: 1, allocations: 1, backups: 1 },
+    allocation: { default: $alloc },
+    start_on_completion: true
+  }')
+
+  resp=$(curl -s -X POST \
+    -H "Authorization: Bearer $api_key" \
+    -H "Content-Type: application/json" \
+    -H "Accept: Application/vnd.pterodactyl.v1+json" \
+    -d "$body" "$panel_url/api/application/servers")
+
+  if echo "$resp" | grep -q '"object":"server"'; then
+    success "Created a Minecraft server (id $(echo "$resp" | jq -r '.attributes.id'))."
+  else
+    warning "Could not create the Minecraft server (egg $egg may not be seeded). Detail: $(echo "$resp" | jq -r '.errors[0].detail // .message // "unknown"' 2>/dev/null)"
+  fi
+  return 0
 }
 
 gen_passwd() {

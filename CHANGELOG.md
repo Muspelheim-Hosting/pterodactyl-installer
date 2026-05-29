@@ -18,3 +18,17 @@ This project follows the [semantic versioning](https://semver.org) convention. C
 - Default panel database user `pterodactyl` → `pyrodactyl`; database host user `pterodactyluser` → `pyrodactyluser`.
 - Install log path `/var/log/pterodactyl-installer.log` → `/var/log/pyrodactyl-installer.log`.
 - FQDN verification now uses the public `api.ipify.org` check-IP service.
+
+### Added
+
+- **Local / no-SSL install:** the panel UI asks about SSL first; if declined it skips the FQDN entirely and serves over `http://<auto-detected-IP>` so a local install works out of the box. When SSL is wanted the FQDN is validated instantly (format) and via DNS before continuing.
+- **Single shared menu:** the installer menu lives once in `lib/lib.sh` (`main_menu`), used by both `install.sh` and the interactive Vagrant test driver.
+- **Detailed end-of-install summary:** panel/Elytra print URL, login, DB, paths, live service status, the generated API key, and next steps.
+- **Panel → Elytra handoff:** the panel installer generates an application API key and writes `/var/lib/pyrodactyl-installer/panel-info` (mode 0600); the Elytra installer reads it.
+- **Same-machine auto node setup:** when a local panel is detected, the Elytra installer auto-creates the location/node/allocations (artisan-native) and writes `/etc/elytra/config.yml`, then starts Elytra over HTTP.
+- **Separate-machine fast-track:** the Elytra installer can take a panel URL + API key and create the node over the panel REST API, then run `elytra configure`.
+- **Location by geolocation:** the node's panel location short code is derived from the server's country (ipapi.co → ipinfo.io → ifconfig.co), falling back to `local`.
+- **Optional phpMyAdmin** (Debian/Ubuntu) served on port 8081.
+- **Optional sample Minecraft server** created via the panel API after node setup (best-effort; `CONFIGURE_MC_SERVER`, egg id `CONFIGURE_MC_EGG`).
+- Ensures the `php` CLI resolves to 8.4 even when multiple PHP versions are installed.
+- Vagrant: an interactive end-to-end test driver (`scripts/vagrant/vagrant_test_interactive.sh`) plus `test`/`test-interactive` provisioners.

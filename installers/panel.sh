@@ -56,6 +56,12 @@ CONFIGURE_LETSENCRYPT="${CONFIGURE_LETSENCRYPT:-false}"
 # Firewall
 CONFIGURE_FIREWALL="${CONFIGURE_FIREWALL:-false}"
 
+# Generate an application API key (used to automate node setup for Elytra)
+CONFIGURE_API_KEY="${CONFIGURE_API_KEY:-true}"
+
+# Optionally install phpMyAdmin (Debian/Ubuntu only), served on port 8081
+CONFIGURE_PHPMYADMIN="${CONFIGURE_PHPMYADMIN:-false}"
+
 # Must be assigned to work, no default values
 email="${email:-}"
 user_email="${user_email:-}"
@@ -194,6 +200,29 @@ configure() {
     --admin=1 </dev/null
 
   success "Configured environment!"
+}
+
+# Record facts the Elytra installer can pick up (panel URL/scheme, DB, API key),
+# and generate an application API key so node setup can be automated.
+record_install_info() {
+  local scheme="http"
+  { [ "$CONFIGURE_LETSENCRYPT" == true ] || [ "$ASSUME_SSL" == true ]; } && scheme="https"
+  export PANEL_SCHEME="$scheme"
+  export PANEL_URL="$scheme://$FQDN"
+  export PANEL_DIR="/var/www/pyrodactyl"
+
+  if [ "$CONFIGURE_API_KEY" == true ]; then
+    output "Generating an application API key for node automation.."
+    if PANEL_API_KEY="$(generate_api_key "$PANEL_DIR")"; then
+      export PANEL_API_KEY
+      success "Application API key generated."
+    else
+      warning "Could not generate an API key; node automation will need one created manually."
+    fi
+  fi
+
+  save_panel_info
+  output "Saved panel info to $INSTALL_INFO_DIR/panel-info (for the Elytra installer)."
 }
 
 # set the correct folder permissions depending on OS and webserver
@@ -374,8 +403,37 @@ firewall_ports() {
   output "Opening ports: 22 (SSH), 80 (HTTP) and 443 (HTTPS)"
 
   firewall_allow_ports "22 80 443"
+  [ "$CONFIGURE_PHPMYADMIN" == true ] && firewall_allow_ports "8081" && output "Opened port 8081 (phpMyAdmin)"
 
   success "Firewall ports opened!"
+}
+
+# Optional: install phpMyAdmin on port 8081 (Debian/Ubuntu only). Uses cookie auth,
+# so users log in with their existing MySQL/MariaDB credentials.
+install_phpmyadmin() {
+  [ "$CONFIGURE_PHPMYADMIN" == true ] || return 0
+
+  case "$OS" in
+  ubuntu | debian) ;;
+  *)
+    warning "Automatic phpMyAdmin install is only supported on Debian/Ubuntu; skipping."
+    return 0
+    ;;
+  esac
+
+  output "Installing phpMyAdmin.."
+  # Non-interactive: skip dbconfig (we don't give phpMyAdmin its own DB; cookie auth is used)
+  echo 'phpmyadmin phpmyadmin/dbconfig-install boolean false' | debconf-set-selections
+  echo 'phpmyadmin phpmyadmin/reconfigure-webserver multiselect' | debconf-set-selections
+  DEBIAN_FRONTEND=noninteractive install_packages "phpmyadmin php$PHP_VERSION-{mbstring,zip,gd,curl}"
+
+  output "Configuring nginx vhost for phpMyAdmin on port 8081.."
+  curl -o /etc/nginx/sites-available/phpmyadmin.conf "$GITHUB_URL"/configs/phpmyadmin.conf
+  sed -i -e "s@<php_socket>@/run/php/php$PHP_VERSION-fpm.sock@g" /etc/nginx/sites-available/phpmyadmin.conf
+  ln -sf /etc/nginx/sites-available/phpmyadmin.conf /etc/nginx/sites-enabled/phpmyadmin.conf
+  systemctl restart nginx
+
+  success "phpMyAdmin installed — reachable on port 8081."
 }
 
 letsencrypt() {
@@ -464,10 +522,12 @@ perform_install() {
   create_db "$MYSQL_DB" "$MYSQL_USER"
   configure
   set_folder_permissions
+  record_install_info
   insert_cronjob
   install_pyroq
   configure_nginx
   [ "$CONFIGURE_LETSENCRYPT" == true ] && letsencrypt
+  install_phpmyadmin
 
   return 0
 }

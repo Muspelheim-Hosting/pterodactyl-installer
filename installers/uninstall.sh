@@ -46,8 +46,11 @@ RM_WINGS="${RM_WINGS:-true}"
 rm_panel_files() {
   output "Removing panel files..."
   rm -rf /var/www/pyrodactyl /usr/local/bin/composer
+  [ -f "$INSTALL_INFO_DIR/panel-info" ] && rm -f "$INSTALL_INFO_DIR/panel-info"
   [ "$OS" != "centos" ] && [ -L /etc/nginx/sites-enabled/pyrodactyl.conf ] && unlink /etc/nginx/sites-enabled/pyrodactyl.conf
   [ "$OS" != "centos" ] && [ -f /etc/nginx/sites-available/pyrodactyl.conf ] && rm -f /etc/nginx/sites-available/pyrodactyl.conf
+  [ -L /etc/nginx/sites-enabled/phpmyadmin.conf ] && unlink /etc/nginx/sites-enabled/phpmyadmin.conf
+  [ -f /etc/nginx/sites-available/phpmyadmin.conf ] && rm -f /etc/nginx/sites-available/phpmyadmin.conf
   [ "$OS" != "centos" ] && [ ! -L /etc/nginx/sites-enabled/default ] && [ -f /etc/nginx/sites-available/default ] && ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
   [ "$OS" == "centos" ] && [ -f /etc/nginx/conf.d/pyrodactyl.conf ] && rm -f /etc/nginx/conf.d/pyrodactyl.conf
   systemctl restart nginx

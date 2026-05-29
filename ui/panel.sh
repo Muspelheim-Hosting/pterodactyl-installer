@@ -64,7 +64,25 @@ export CONFIGURE_LETSENCRYPT=false
 # Firewall
 export CONFIGURE_FIREWALL=false
 
+# phpMyAdmin (Debian/Ubuntu only)
+export CONFIGURE_PHPMYADMIN=false
+
 # ------------ User input functions ------------ #
+
+ask_phpmyadmin() {
+  # apt-only feature
+  case "$OS" in
+  ubuntu | debian) ;;
+  *) return 0 ;;
+  esac
+
+  output "phpMyAdmin gives a web UI for the database (served on port 8081)."
+  echo -e -n "* Do you want to install phpMyAdmin? (y/N): "
+  read -r CONFIRM_PMA
+
+  [[ "$CONFIRM_PMA" =~ [Yy] ]] && CONFIGURE_PHPMYADMIN=true
+  true
+}
 
 ask_letsencrypt() {
   if [ "$CONFIGURE_UFW" == false ] && [ "$CONFIGURE_FIREWALL_CMD" == false ]; then
@@ -192,6 +210,9 @@ main() {
   # Ask if firewall is needed
   ask_firewall CONFIGURE_FIREWALL
 
+  # Optional phpMyAdmin
+  ask_phpmyadmin
+
   # SSL decision + FQDN (FQDN is only needed when SSL is wanted)
   ask_ssl_and_fqdn
 
@@ -224,6 +245,7 @@ summary() {
   output "User password: (censored)"
   output "Hostname/FQDN: $FQDN"
   output "Configure Firewall? $CONFIGURE_FIREWALL"
+  output "Install phpMyAdmin? $CONFIGURE_PHPMYADMIN"
   output "Configure Let's Encrypt? $CONFIGURE_LETSENCRYPT"
   output "Assume SSL? $ASSUME_SSL"
   print_brake 62
@@ -243,7 +265,17 @@ goodbye() {
   output "DB password:   stored in /var/www/pyrodactyl/.env (DB_PASSWORD)"
   output "Install path:  /var/www/pyrodactyl"
   output "Webserver:     nginx on $OS"
+  [ "$CONFIGURE_PHPMYADMIN" == true ] && output "phpMyAdmin:    http://$FQDN:8081  (log in with your MySQL credentials)"
   output "Install log:   $LOG_PATH"
+
+  # Surface the application API key the installer generated (saved for Elytra).
+  load_panel_info 2>/dev/null || true
+  if [ -n "${PANEL_API_KEY:-}" ]; then
+    output ""
+    output "Application API key (for adding nodes / the Elytra installer):"
+    output "  $PANEL_API_KEY"
+    output "  (also saved, root-only, in $INSTALL_INFO_DIR/panel-info)"
+  fi
   output ""
   output "Service status:"
   output "  nginx:  $(systemctl is-active nginx 2>/dev/null || true)"
