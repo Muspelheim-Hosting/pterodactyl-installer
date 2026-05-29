@@ -52,6 +52,9 @@ export EMAIL=""
 # Rustic backup tool (deduplicated, encrypted backups)
 export CONFIGURE_RUSTIC=true
 
+# Auto-create a node + write Elytra config when a local panel is detected
+export CONFIGURE_LOCAL_NODE=false
+
 # Database host
 export CONFIGURE_DBHOST=false
 export CONFIGURE_DB_FIREWALL=false
@@ -121,6 +124,20 @@ ask_rustic() {
   true
 }
 
+ask_local_node() {
+  # Only relevant when the panel is on this same machine.
+  [ -d "/var/www/pyrodactyl" ] || return 0
+
+  output "A local Pyrodactyl panel was detected on this machine."
+  output "The installer can create a node for it and configure Elytra automatically,"
+  output "so a single-machine install works out of the box (recommended)."
+  echo -e -n "* Automatically create a local node and configure Elytra? (Y/n): "
+  read -r CONFIRM_LOCAL_NODE
+
+  [[ "$CONFIRM_LOCAL_NODE" =~ [Nn] ]] || CONFIGURE_LOCAL_NODE=true
+  true
+}
+
 ####################
 ## MAIN FUNCTIONS ##
 ####################
@@ -156,6 +173,8 @@ main() {
 
   ask_rustic
 
+  ask_local_node
+
   ask_database_user
 
   if [ "$CONFIGURE_DBHOST" == true ]; then
@@ -184,7 +203,8 @@ main() {
       ASK=false
 
       [ -z "$FQDN" ] && error "FQDN cannot be empty"                                                            # check if FQDN is empty
-      bash <(curl -s "$GITHUB_URL"/lib/verify-fqdn.sh) "$FQDN" || ASK=true                                      # check if FQDN is valid
+      [ -n "$FQDN" ] && ! valid_fqdn "$FQDN" && error "Invalid FQDN. Use a domain name, not an IP address." && FQDN="" && ASK=true # instant format check
+      [ -n "$FQDN" ] && { bash <(curl -s "$GITHUB_URL"/lib/verify-fqdn.sh) "$FQDN" || ASK=true; }               # check if FQDN resolves
       [ -d "/etc/letsencrypt/live/$FQDN/" ] && error "A certificate with this FQDN already exists!" && ASK=true # check if cert exists
 
       [ "$ASK" == true ] && FQDN=""
@@ -222,24 +242,27 @@ main() {
 function goodbye {
   echo ""
   print_brake 70
-  echo "* Elytra installation completed"
-  echo "*"
-  echo "* To continue, you need to configure Elytra to run with your panel"
-  echo "* Please refer to the official guide, $(hyperlink 'https://github.com/pyrohost/elytra#readme')"
-  echo "* "
-  echo "* You can either copy the configuration file from the panel manually to /etc/elytra/config.yml"
-  echo "* or, you can use the \"auto deploy\" button from the panel and simply paste the command in this terminal"
-  echo "* "
-  echo "* You can then start Elytra manually to verify that it's working"
-  echo "*"
-  echo "* sudo elytra"
-  echo "*"
-  echo "* Once you have verified that it is working, use CTRL+C and then start Elytra as a service (runs in the background)"
-  echo "*"
-  echo "* systemctl start elytra"
-  echo "*"
-  echo -e "* ${COLOR_RED}Note${COLOR_NC}: It is recommended to enable swap (for Docker, read more about it in official documentation)."
-  [ "$CONFIGURE_FIREWALL" == false ] && echo -e "* ${COLOR_RED}Note${COLOR_NC}: If you haven't configured your firewall, ports 8080 and 2022 needs to be open."
+  output "Elytra installation completed!"
+  output ""
+  output "Binary:        /usr/local/bin/elytra"
+  output "Config:        /etc/elytra/config.yml"
+  output "Data:          /var/lib/elytra"
+  output "rustic:        $([ -x /usr/local/bin/rustic ] && echo "/usr/local/bin/rustic (backups enabled)" || echo "not installed")"
+  output ""
+  output "Service status:"
+  output "  docker:  $(systemctl is-active docker 2>/dev/null || true)"
+  output "  elytra:  $(systemctl is-active elytra 2>/dev/null || true)  (not started yet — needs a config)"
+  output ""
+  output "To finish, attach this node to your panel:"
+  output "  1. In the panel: Admin -> Nodes -> Create, then open the node's Configuration tab."
+  output "  2. Click \"Generate Token\" / auto-deploy and paste its command here, e.g.:"
+  output "       cd /etc/elytra && sudo elytra configure --panel-url <url> --token <token> --node <id>"
+  output "  3. Verify it runs:  sudo elytra"
+  output "  4. Then start the service:  systemctl enable --now elytra"
+  output ""
+  output "Docs: $(hyperlink 'https://github.com/pyrohost/elytra#readme')"
+  echo -e "* ${COLOR_RED}Note${COLOR_NC}: It is recommended to enable swap for Docker."
+  [ "$CONFIGURE_FIREWALL" == false ] && echo -e "* ${COLOR_RED}Note${COLOR_NC}: If you haven't configured your firewall, ports 8080 and 2022 must be open."
   print_brake 70
   echo ""
 }

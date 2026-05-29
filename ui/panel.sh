@@ -91,13 +91,40 @@ ask_assume_ssl() {
   true
 }
 
-check_FQDN_SSL() {
-  if [[ $(invalid_ip "$FQDN") == 1 && $FQDN != 'localhost' ]]; then
-    SSL_AVAILABLE=true
-  else
-    warning "* Let's Encrypt will not be available for IP addresses."
-    output "To use Let's Encrypt, you must use a valid domain name."
+# SSL is the only reason an FQDN is needed. If the user doesn't want SSL we skip
+# the FQDN entirely and serve the panel over plain HTTP on the server's IP. If
+# they do want SSL we demand a valid domain and validate it before continuing.
+ask_ssl_and_fqdn() {
+  output "SSL/HTTPS requires a domain name (FQDN) that points at this server."
+  output "Without SSL the panel is served over plain HTTP using this server's IP address."
+  echo -e -n "* Do you want to configure SSL (HTTPS)? (y/N): "
+  read -r WANT_SSL
+
+  if [[ ! "$WANT_SSL" =~ [Yy] ]]; then
+    FQDN="$(get_primary_ip)"
+    ASSUME_SSL=false
+    CONFIGURE_LETSENCRYPT=false
+    output "No SSL selected. The panel will be served over http://$FQDN"
+    return 0
   fi
+
+  # SSL wanted: require a valid domain, validated instantly (format) before continuing.
+  FQDN=""
+  while [ -z "$FQDN" ]; do
+    echo -n "* Set the FQDN of this panel (panel.example.com): "
+    read -r FQDN
+    if ! valid_fqdn "$FQDN"; then
+      error "Invalid FQDN. Use a domain name (e.g. panel.example.com), not an IP address."
+      FQDN=""
+    fi
+  done
+
+  # Let's Encrypt (auto-obtain) or assume an externally-provided certificate.
+  ask_letsencrypt
+  [ "$CONFIGURE_LETSENCRYPT" == false ] && ask_assume_ssl
+
+  # Validate the FQDN's DNS now, before installing (matches the upstream behaviour).
+  bash <(curl -s "$GITHUB_URL"/lib/verify-fqdn.sh) "$FQDN"
 }
 
 main() {
@@ -151,7 +178,7 @@ main() {
     [ -z "$timezone_input" ] && timezone="Europe/Stockholm" # because köttbullar!
   done
 
-  email_input email "Provide the email address that will be used to configure Let's Encrypt and Pyrodactyl: " "Email cannot be empty or invalid"
+  email_input email "Provide the email address for Pyrodactyl (also used for Let's Encrypt if SSL is enabled): " "Email cannot be empty or invalid"
 
   # Initial admin account
   email_input user_email "Email address for the initial admin account: " "Email cannot be empty or invalid"
@@ -162,29 +189,11 @@ main() {
 
   print_brake 72
 
-  # set FQDN
-  while [ -z "$FQDN" ]; do
-    echo -n "* Set the FQDN of this panel (panel.example.com): "
-    read -r FQDN
-    [ -z "$FQDN" ] && error "FQDN cannot be empty"
-  done
-
-  # Check if SSL is available
-  check_FQDN_SSL
-
   # Ask if firewall is needed
   ask_firewall CONFIGURE_FIREWALL
 
-  # Only ask about SSL if it is available
-  if [ "$SSL_AVAILABLE" == true ]; then
-    # Ask if letsencrypt is needed
-    ask_letsencrypt
-    # If it's already true, this should be a no-brainer
-    [ "$CONFIGURE_LETSENCRYPT" == false ] && ask_assume_ssl
-  fi
-
-  # verify FQDN if user has selected to assume SSL or configure Let's Encrypt
-  [ "$CONFIGURE_LETSENCRYPT" == true ] || [ "$ASSUME_SSL" == true ] && bash <(curl -s "$GITHUB_URL"/lib/verify-fqdn.sh) "$FQDN"
+  # SSL decision + FQDN (FQDN is only needed when SSL is wanted)
+  ask_ssl_and_fqdn
 
   # summary
   summary
@@ -221,19 +230,35 @@ summary() {
 }
 
 goodbye() {
-  print_brake 62
-  output "Panel installation completed"
+  local scheme="http"
+  { [ "$CONFIGURE_LETSENCRYPT" == true ] || [ "$ASSUME_SSL" == true ]; } && scheme="https"
+  local url="$scheme://$FQDN"
+
+  print_brake 70
+  output "Pyrodactyl panel installation completed!"
+  output ""
+  output "Panel URL:     $(hyperlink "$url")"
+  output "Admin login:   $user_username  ($user_email)"
+  output "Database:      $MYSQL_DB  (user: $MYSQL_USER)  on 127.0.0.1:3306"
+  output "DB password:   stored in /var/www/pyrodactyl/.env (DB_PASSWORD)"
+  output "Install path:  /var/www/pyrodactyl"
+  output "Webserver:     nginx on $OS"
+  output "Install log:   $LOG_PATH"
+  output ""
+  output "Service status:"
+  output "  nginx:  $(systemctl is-active nginx 2>/dev/null || true)"
+  output "  pyroq:  $(systemctl is-active pyroq 2>/dev/null || true)"
+  output "  redis:  $(systemctl is-active redis-server 2>/dev/null || systemctl is-active redis 2>/dev/null || true)"
+  output "  mariadb: $(systemctl is-active mariadb 2>/dev/null || true)"
   output ""
 
-  [ "$CONFIGURE_LETSENCRYPT" == true ] && output "Your panel should be accessible from $(hyperlink "$FQDN")"
-  [ "$ASSUME_SSL" == true ] && [ "$CONFIGURE_LETSENCRYPT" == false ] && output "You have opted in to use SSL, but not via Let's Encrypt automatically. Your panel will not work until SSL has been configured."
-  [ "$ASSUME_SSL" == false ] && [ "$CONFIGURE_LETSENCRYPT" == false ] && output "Your panel should be accessible from $(hyperlink "$FQDN")"
-
-  output ""
-  output "Installation is using nginx on $OS"
+  if [ "$ASSUME_SSL" == true ] && [ "$CONFIGURE_LETSENCRYPT" == false ]; then
+    warning "You opted to assume SSL but no certificate was obtained. The panel will not load until a cert exists at /etc/ssl/$FQDN.pem / .key."
+  fi
+  [ "$CONFIGURE_FIREWALL" == false ] && echo -e "* ${COLOR_RED}Note${COLOR_NC}: If you haven't configured the firewall, ports 80/443 (HTTP/HTTPS) must be open."
+  output "Next: log in at $(hyperlink "$url") and add a node (Admin -> Nodes) to attach Elytra."
   output "Thank you for using this script."
-  [ "$CONFIGURE_FIREWALL" == false ] && echo -e "* ${COLOR_RED}Note${COLOR_NC}: If you haven't configured the firewall: 80/443 (HTTP/HTTPS) is required to be open!"
-  print_brake 62
+  print_brake 70
 }
 
 # run script

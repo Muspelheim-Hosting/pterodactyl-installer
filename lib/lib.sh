@@ -269,6 +269,23 @@ invalid_ip() {
   echo $?
 }
 
+# True if $1 looks like a domain name (FQDN) — not empty, not localhost, not a bare IPv4.
+valid_fqdn() {
+  local fqdn="$1"
+  [ -z "$fqdn" ] && return 1
+  [ "$fqdn" == "localhost" ] && return 1
+  [[ "$fqdn" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && return 1
+  [[ "$fqdn" =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$ ]]
+}
+
+# Best-effort detection of this server's primary outbound IP (used for non-SSL installs).
+get_primary_ip() {
+  local ip
+  ip=$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.*src \([0-9.]*\).*/\1/p' | head -n1)
+  [ -z "$ip" ] && ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  echo "${ip:-127.0.0.1}"
+}
+
 gen_passwd() {
   local length=$1
   local password=""

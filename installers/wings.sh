@@ -51,6 +51,10 @@ EMAIL="${EMAIL:-}"
 # Rustic backup tool (deduplicated, encrypted backups) — optional but recommended by Pyrodactyl
 CONFIGURE_RUSTIC="${CONFIGURE_RUSTIC:-true}"
 
+# Auto-create a node in a local panel and write Elytra's config (same-machine install)
+CONFIGURE_LOCAL_NODE="${CONFIGURE_LOCAL_NODE:-false}"
+PANEL_DIR="${PANEL_DIR:-/var/www/pyrodactyl}"
+
 # Database host
 CONFIGURE_DBHOST="${CONFIGURE_DBHOST:-false}"
 CONFIGURE_DB_FIREWALL="${CONFIGURE_DB_FIREWALL:-false}"
@@ -253,6 +257,85 @@ configure_mysql() {
   success "MySQL configured!"
 }
 
+# When Elytra is installed on the same machine as the panel, create the node and
+# write its config automatically (artisan-native, no API key needed) so a local
+# install works out of the box. fqdn/scheme are derived from the panel's APP_URL.
+setup_local_node() {
+  [ "$CONFIGURE_LOCAL_NODE" == true ] || return 0
+
+  if [ ! -f "$PANEL_DIR/artisan" ]; then
+    warning "No local panel found at $PANEL_DIR; skipping automatic node setup."
+    return 0
+  fi
+
+  output "Configuring a local node via the panel.."
+  cd "$PANEL_DIR" || return 0
+
+  # Derive panel DB name, node fqdn and scheme from the panel's .env
+  local panel_db app_url scheme node_fqdn
+  panel_db=$(grep -E '^DB_DATABASE=' .env | head -n1 | cut -d= -f2- | tr -d '"' )
+  [ -z "$panel_db" ] && panel_db="panel"
+  app_url=$(grep -E '^APP_URL=' .env | head -n1 | cut -d= -f2- | tr -d '"' )
+  scheme="${app_url%%://*}"; [ "$scheme" == "https" ] || scheme="http"
+  node_fqdn="${app_url#*://}"; node_fqdn="${node_fqdn%%/*}"
+  [ -z "$node_fqdn" ] && node_fqdn="$(get_primary_ip)"
+
+  # Detect node resources (MB) with sane fallbacks
+  local mem disk
+  mem=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}'); [ -z "$mem" ] && mem=4096
+  disk=$(df -Pm /var/lib 2>/dev/null | awk 'NR==2{print $2}'); [ -z "$disk" ] && disk=20480
+
+  # Location (idempotent)
+  if ! mariadb -u root -D "$panel_db" -N -B -e "SELECT id FROM locations WHERE short='local' LIMIT 1;" 2>/dev/null | grep -q .; then
+    php artisan p:location:make --short=local --long=Local -n </dev/null || warning "Could not create location"
+  fi
+  local location_id
+  location_id=$(mariadb -u root -D "$panel_db" -N -B -e "SELECT id FROM locations WHERE short='local' LIMIT 1;" 2>/dev/null)
+
+  # Node (idempotent)
+  if ! mariadb -u root -D "$panel_db" -N -B -e "SELECT id FROM nodes WHERE name='local' LIMIT 1;" 2>/dev/null | grep -q .; then
+    php artisan p:node:make \
+      --name=local \
+      --description="Local node (auto-created by pyrodactyl-installer)" \
+      --locationId="$location_id" \
+      --fqdn="$node_fqdn" \
+      --public=1 \
+      --scheme="$scheme" \
+      --proxy=no \
+      --maxMemory="$mem" --overallocateMemory=0 \
+      --maxDisk="$disk" --overallocateDisk=0 \
+      --uploadSize=100 -n </dev/null || warning "Could not create node"
+  fi
+  local node_id
+  node_id=$(mariadb -u root -D "$panel_db" -N -B -e "SELECT id FROM nodes WHERE name='local' LIMIT 1;" 2>/dev/null)
+
+  if [ -z "$node_id" ]; then
+    warning "Node creation failed; configure the node manually from the panel."
+    return 0
+  fi
+
+  # Allocations: ports 25500-25600, ip 0.0.0.0
+  output "Adding allocations (ports 25500-25600) to node $node_id.."
+  local p
+  for p in $(seq 25500 25600); do
+    mariadb -u root -e "INSERT IGNORE INTO ${panel_db}.allocations (node_id, ip, port) VALUES ($node_id, '0.0.0.0', $p);"
+  done
+
+  # Write Elytra's config straight from the panel
+  output "Writing /etc/elytra/config.yml from the panel.."
+  mkdir -p /etc/elytra
+  if php artisan p:node:configuration "$node_id" </dev/null >/etc/elytra/config.yml; then
+    success "Elytra configured for node $node_id ($scheme://$node_fqdn)."
+    if [ "$scheme" == "http" ]; then
+      systemctl restart elytra && success "Elytra started."
+    else
+      warning "Node uses https; install a TLS certificate for $node_fqdn, then: systemctl start elytra"
+    fi
+  else
+    warning "Could not generate the Elytra config; configure the node manually from the panel."
+  fi
+}
+
 # --------------- Main functions --------------- #
 
 perform_install() {
@@ -264,6 +347,7 @@ perform_install() {
   systemd_file
   [ "$CONFIGURE_DBHOST" == true ] && configure_mysql
   [ "$CONFIGURE_LETSENCRYPT" == true ] && letsencrypt
+  setup_local_node
 
   return 0
 }

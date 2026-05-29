@@ -353,6 +353,21 @@ dep_install() {
   success "Dependencies installed!"
 }
 
+# Make sure the `php` CLI resolves to $PHP_VERSION even when an older PHP is also
+# installed; otherwise composer/artisan can run under the wrong version and fail
+# (Pyrodactyl's composer.lock requires >= 8.4).
+ensure_php_default() {
+  case "$OS" in
+  ubuntu | debian)
+    update-alternatives --set php "/usr/bin/php$PHP_VERSION" || warning "Could not set the default php to $PHP_VERSION via update-alternatives."
+    ;;
+  esac
+
+  if ! php -v | grep -q "PHP $PHP_VERSION"; then
+    warning "The default 'php' is not $PHP_VERSION ($(php -v | head -n1)); composer/artisan may misbehave."
+  fi
+}
+
 # --------------- Other functions -------------- #
 
 firewall_ports() {
@@ -440,6 +455,7 @@ configure_nginx() {
 perform_install() {
   output "Starting installation.. this might take a while!"
   dep_install
+  ensure_php_default
   install_composer
   pyro_dl
   install_composer_deps
