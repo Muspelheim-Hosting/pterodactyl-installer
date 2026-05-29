@@ -4,7 +4,7 @@ set -e
 
 ######################################################################################
 #                                                                                    #
-# Project 'pterodactyl-installer'                                                    #
+# Project 'pyrodactyl-installer'                                                     #
 #                                                                                    #
 # Copyright (C) 2018 - 2026, Vilhelm Prytz, <vilhelm@prytznet.se>                    #
 #                                                                                    #
@@ -21,10 +21,10 @@ set -e
 #   You should have received a copy of the GNU General Public License                #
 #   along with this program.  If not, see <https://www.gnu.org/licenses/>.           #
 #                                                                                    #
-# https://github.com/pterodactyl-installer/pterodactyl-installer/blob/master/LICENSE #
+# https://github.com/Muspelheim-Hosting/pterodactyl-installer/blob/master/LICENSE    #
 #                                                                                    #
-# This script is not associated with the official Pterodactyl Project.               #
-# https://github.com/pterodactyl-installer/pterodactyl-installer                     #
+# Based on pterodactyl-installer by Vilhelm Prytz. Not an official project.          #
+# https://github.com/Muspelheim-Hosting/pterodactyl-installer                        #
 #                                                                                    #
 ######################################################################################
 
@@ -32,7 +32,7 @@ set -e
 fn_exists() { declare -F "$1" >/dev/null; }
 if ! fn_exists lib_loaded; then
   # shellcheck source=lib/lib.sh
-  source /tmp/lib.sh || source <(curl -sSL "$GITHUB_BASE_URL/$GITHUB_SOURCE"/lib/lib.sh)
+  source /tmp/pyrodactyl-lib.sh || source <(curl -sSL "$GITHUB_BASE_URL/$GITHUB_SOURCE"/lib/lib.sh)
   ! fn_exists lib_loaded && echo "* ERROR: Could not load lib script" && exit 1
 fi
 
@@ -48,11 +48,14 @@ CONFIGURE_LETSENCRYPT="${CONFIGURE_LETSENCRYPT:-false}"
 FQDN="${FQDN:-}"
 EMAIL="${EMAIL:-}"
 
+# Rustic backup tool (deduplicated, encrypted backups) — optional but recommended by Pyrodactyl
+CONFIGURE_RUSTIC="${CONFIGURE_RUSTIC:-true}"
+
 # Database host
 CONFIGURE_DBHOST="${CONFIGURE_DBHOST:-false}"
 CONFIGURE_DB_FIREWALL="${CONFIGURE_DB_FIREWALL:-false}"
 MYSQL_DBHOST_HOST="${MYSQL_DBHOST_HOST:-127.0.0.1}"
-MYSQL_DBHOST_USER="${MYSQL_DBHOST_USER:-pterodactyluser}"
+MYSQL_DBHOST_USER="${MYSQL_DBHOST_USER:-pyrodactyluser}"
 MYSQL_DBHOST_PASSWORD="${MYSQL_DBHOST_PASSWORD:-}"
 
 if [[ $CONFIGURE_DBHOST == true && -z "${MYSQL_DBHOST_PASSWORD}" ]]; then
@@ -99,8 +102,8 @@ dep_install() {
   # Update the new repos
   update_repos
 
-  # Install dependencies
-  install_packages "docker-ce docker-ce-cli containerd.io"
+  # Install dependencies (buildx + compose plugins and tar per the Elytra install guide)
+  install_packages "docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin tar"
 
   # Install mariadb if needed
   [ "$INSTALL_MARIADB" == true ] && install_packages "mariadb-server"
@@ -111,29 +114,86 @@ dep_install() {
   success "Dependencies installed!"
 }
 
-ptdl_dl() {
-  echo "* Downloading Pterodactyl Wings.. "
+elytra_dl() {
+  echo "* Downloading Pyrodactyl Elytra.. "
 
-  mkdir -p /etc/pterodactyl
-  curl -L -o /usr/local/bin/wings "$WINGS_DL_BASE_URL$ARCH"
+  mkdir -p /etc/elytra
+  curl -L -o /usr/local/bin/elytra "$ELYTRA_DL_BASE_URL$ARCH"
 
-  chmod u+x /usr/local/bin/wings
+  chmod u+x /usr/local/bin/elytra
 
-  success "Pterodactyl Wings downloaded successfully"
+  success "Pyrodactyl Elytra downloaded successfully"
+}
+
+# Elytra provisions a 'pyrodactyl' system user on first start and can fail to do so in
+# some environments (logged as "failed to create pyrodactyl system user error=exit status 4").
+# Pre-creating the account avoids that failure.
+create_elytra_user() {
+  if getent passwd pyrodactyl >/dev/null 2>&1; then
+    output "System user 'pyrodactyl' already exists, skipping."
+    return 0
+  fi
+
+  output "Creating 'pyrodactyl' system user for Elytra.."
+  useradd --system --create-home --shell /usr/sbin/nologin \
+    --comment "Elytra/Pyrodactyl system user" pyrodactyl
+
+  success "Created 'pyrodactyl' system user."
+}
+
+# Rustic gives Elytra deduplicated, encrypted backups. Optional, but recommended.
+# Failure here is non-fatal: Elytra runs without it (you just lose dedup/encrypted backups).
+install_rustic() {
+  output "Installing rustic (deduplicated, encrypted backups).."
+
+  if [ -x "$(command -v rustic)" ]; then
+    success "rustic is already installed, skipping."
+    return 0
+  fi
+
+  local rustic_arch
+  case "$ARCH" in
+  amd64) rustic_arch="x86_64" ;;
+  arm64) rustic_arch="aarch64" ;;
+  *)
+    warning "Unknown architecture '$ARCH'; skipping rustic install."
+    return 0
+    ;;
+  esac
+
+  local rustic_version
+  rustic_version=$(get_latest_release "rustic-rs/rustic")
+  if [ -z "$rustic_version" ]; then
+    rustic_version="v0.10.0"
+    warning "Could not determine the latest rustic version; falling back to $rustic_version"
+  fi
+
+  output "Downloading rustic $rustic_version.."
+  if ! curl -fsSL -o /tmp/rustic.tar.gz \
+    "https://github.com/rustic-rs/rustic/releases/download/${rustic_version}/rustic-${rustic_version}-${rustic_arch}-unknown-linux-musl.tar.gz"; then
+    warning "Failed to download rustic; continuing without it."
+    return 0
+  fi
+
+  tar -xzf /tmp/rustic.tar.gz -C /usr/local/bin rustic
+  chmod +x /usr/local/bin/rustic
+  rm -f /tmp/rustic.tar.gz
+
+  success "rustic installed!"
 }
 
 systemd_file() {
   output "Installing systemd service.."
 
-  curl -o /etc/systemd/system/wings.service "$GITHUB_URL"/configs/wings.service
+  curl -o /etc/systemd/system/elytra.service "$GITHUB_URL"/configs/elytra.service
   systemctl daemon-reload
-  systemctl enable wings
+  systemctl enable elytra
 
   success "Installed systemd service!"
 }
 
 firewall_ports() {
-  output "Opening port 22 (SSH), 8080 (Wings Port), 2022 (Wings SFTP Port)"
+  output "Opening port 22 (SSH), 8080 (Elytra Port), 2022 (Elytra SFTP Port)"
 
   [ "$CONFIGURE_LETSENCRYPT" == true ] && firewall_allow_ports "80 443"
   [ "$CONFIGURE_DB_FIREWALL" == true ] && firewall_allow_ports "3306"
@@ -196,9 +256,11 @@ configure_mysql() {
 # --------------- Main functions --------------- #
 
 perform_install() {
-  output "Installing pterodactyl wings.."
+  output "Installing Pyrodactyl Elytra.."
   dep_install
-  ptdl_dl
+  create_elytra_user
+  elytra_dl
+  [ "$CONFIGURE_RUSTIC" == true ] && install_rustic
   systemd_file
   [ "$CONFIGURE_DBHOST" == true ] && configure_mysql
   [ "$CONFIGURE_LETSENCRYPT" == true ] && letsencrypt

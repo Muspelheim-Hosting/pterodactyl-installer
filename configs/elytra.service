@@ -1,18 +1,18 @@
 [Unit]
-Description=Pterodactyl Wings Daemon
+Description=Pyrodactyl Elytra Daemon
 After=docker.service
 Requires=docker.service
 PartOf=docker.service
+StartLimitIntervalSec=180
+StartLimitBurst=30
 
 [Service]
 User=root
-WorkingDirectory=/etc/pterodactyl
+WorkingDirectory=/etc/elytra
 LimitNOFILE=4096
-PIDFile=/var/run/wings/daemon.pid
-ExecStart=/usr/local/bin/wings
+PIDFile=/var/run/elytra/daemon.pid
+ExecStart=/usr/local/bin/elytra
 Restart=on-failure
-StartLimitInterval=180
-StartLimitBurst=30
 RestartSec=5s
 
 [Install]

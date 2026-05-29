@@ -4,7 +4,7 @@ set -e
 
 ######################################################################################
 #                                                                                    #
-# Project 'pterodactyl-installer'                                                    #
+# Project 'pyrodactyl-installer'                                                     #
 #                                                                                    #
 # Copyright (C) 2018 - 2026, Vilhelm Prytz, <vilhelm@prytznet.se>                    #
 #                                                                                    #
@@ -21,10 +21,10 @@ set -e
 #   You should have received a copy of the GNU General Public License                #
 #   along with this program.  If not, see <https://www.gnu.org/licenses/>.           #
 #                                                                                    #
-# https://github.com/pterodactyl-installer/pterodactyl-installer/blob/master/LICENSE #
+# https://github.com/Muspelheim-Hosting/pterodactyl-installer/blob/master/LICENSE    #
 #                                                                                    #
-# This script is not associated with the official Pterodactyl Project.               #
-# https://github.com/pterodactyl-installer/pterodactyl-installer                     #
+# Based on pterodactyl-installer by Vilhelm Prytz. Not an official project.          #
+# https://github.com/Muspelheim-Hosting/pterodactyl-installer                        #
 #                                                                                    #
 ######################################################################################
 
@@ -32,7 +32,7 @@ set -e
 fn_exists() { declare -F "$1" >/dev/null; }
 if ! fn_exists lib_loaded; then
   # shellcheck source=lib/lib.sh
-  source /tmp/lib.sh || source <(curl -sSL "$GITHUB_BASE_URL/$GITHUB_SOURCE"/lib/lib.sh)
+  source /tmp/pyrodactyl-lib.sh || source <(curl -sSL "$GITHUB_BASE_URL/$GITHUB_SOURCE"/lib/lib.sh)
   ! fn_exists lib_loaded && echo "* ERROR: Could not load lib script" && exit 1
 fi
 
@@ -102,8 +102,8 @@ check_FQDN_SSL() {
 
 main() {
   # check if we can detect an already existing installation
-  if [ -d "/var/www/pterodactyl" ]; then
-    warning "The script has detected that you already have Pterodactyl panel on your system! You cannot run the script multiple times, it will fail!"
+  if [ -d "/var/www/pyrodactyl" ]; then
+    warning "The script has detected that you already have Pyrodactyl panel on your system! You cannot run the script multiple times, it will fail!"
     echo -e -n "* Are you sure you want to proceed? (y/N): "
     read -r CONFIRM_PROCEED
     if [[ ! "$CONFIRM_PROCEED" =~ [Yy] ]]; then
@@ -132,7 +132,7 @@ main() {
 
   MYSQL_USER="-"
   while [[ "$MYSQL_USER" == *"-"* ]]; do
-    required_input MYSQL_USER "Database username (pterodactyl): " "" "pterodactyl"
+    required_input MYSQL_USER "Database username (pyrodactyl): " "" "pyrodactyl"
     [[ "$MYSQL_USER" == *"-"* ]] && error "Database user cannot contain hyphens"
   done
 
@@ -151,7 +151,7 @@ main() {
     [ -z "$timezone_input" ] && timezone="Europe/Stockholm" # because köttbullar!
   done
 
-  email_input email "Provide the email address that will be used to configure Let's Encrypt and Pterodactyl: " "Email cannot be empty or invalid"
+  email_input email "Provide the email address that will be used to configure Let's Encrypt and Pyrodactyl: " "Email cannot be empty or invalid"
 
   # Initial admin account
   email_input user_email "Email address for the initial admin account: " "Email cannot be empty or invalid"
@@ -202,7 +202,7 @@ main() {
 
 summary() {
   print_brake 62
-  output "Pterodactyl panel $PTERODACTYL_PANEL_VERSION with nginx on $OS"
+  output "Pyrodactyl panel $PYRODACTYL_PANEL_VERSION with nginx on $OS"
   output "Database name: $MYSQL_DB"
   output "Database user: $MYSQL_USER"
   output "Database password: (censored)"

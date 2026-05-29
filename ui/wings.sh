@@ -4,7 +4,7 @@ set -e
 
 ######################################################################################
 #                                                                                    #
-# Project 'pterodactyl-installer'                                                    #
+# Project 'pyrodactyl-installer'                                                     #
 #                                                                                    #
 # Copyright (C) 2018 - 2026, Vilhelm Prytz, <vilhelm@prytznet.se>                    #
 #                                                                                    #
@@ -21,10 +21,10 @@ set -e
 #   You should have received a copy of the GNU General Public License                #
 #   along with this program.  If not, see <https://www.gnu.org/licenses/>.           #
 #                                                                                    #
-# https://github.com/pterodactyl-installer/pterodactyl-installer/blob/master/LICENSE #
+# https://github.com/Muspelheim-Hosting/pterodactyl-installer/blob/master/LICENSE    #
 #                                                                                    #
-# This script is not associated with the official Pterodactyl Project.               #
-# https://github.com/pterodactyl-installer/pterodactyl-installer                     #
+# Based on pterodactyl-installer by Vilhelm Prytz. Not an official project.          #
+# https://github.com/Muspelheim-Hosting/pterodactyl-installer                        #
 #                                                                                    #
 ######################################################################################
 
@@ -32,7 +32,7 @@ set -e
 fn_exists() { declare -F "$1" >/dev/null; }
 if ! fn_exists lib_loaded; then
   # shellcheck source=lib/lib.sh
-  source /tmp/lib.sh || source <(curl -sSL "$GITHUB_BASE_URL/$GITHUB_SOURCE"/lib/lib.sh)
+  source /tmp/pyrodactyl-lib.sh || source <(curl -sSL "$GITHUB_BASE_URL/$GITHUB_SOURCE"/lib/lib.sh)
   ! fn_exists lib_loaded && echo "* ERROR: Could not load lib script" && exit 1
 fi
 
@@ -49,11 +49,14 @@ export CONFIGURE_LETSENCRYPT=false
 export FQDN=""
 export EMAIL=""
 
+# Rustic backup tool (deduplicated, encrypted backups)
+export CONFIGURE_RUSTIC=true
+
 # Database host
 export CONFIGURE_DBHOST=false
 export CONFIGURE_DB_FIREWALL=false
 export MYSQL_DBHOST_HOST="127.0.0.1"
-export MYSQL_DBHOST_USER="pterodactyluser"
+export MYSQL_DBHOST_USER="pyrodactyluser"
 export MYSQL_DBHOST_PASSWORD=""
 
 # ------------ User input functions ------------ #
@@ -109,14 +112,23 @@ ask_database_firewall() {
   fi
 }
 
+ask_rustic() {
+  output "Rustic enables deduplicated, encrypted backups for Elytra. It is optional but recommended."
+  echo -e -n "* Do you want to install rustic? (Y/n): "
+  read -r CONFIRM_RUSTIC
+
+  [[ "$CONFIRM_RUSTIC" =~ [Nn] ]] && CONFIGURE_RUSTIC=false
+  true
+}
+
 ####################
 ## MAIN FUNCTIONS ##
 ####################
 
 main() {
   # check if we can detect an already existing installation
-  if [ -d "/etc/pterodactyl" ]; then
-    warning "The script has detected that you already have Pterodactyl wings on your system! You cannot run the script multiple times, it will fail!"
+  if [ -d "/etc/elytra" ]; then
+    warning "The script has detected that you already have Pyrodactyl Elytra on your system! You cannot run the script multiple times, it will fail!"
     echo -e -n "* Are you sure you want to proceed? (y/N): "
     read -r CONFIRM_PROCEED
     if [[ ! "$CONFIRM_PROCEED" =~ [Yy] ]]; then
@@ -130,17 +142,19 @@ main() {
   check_virt
 
   echo "* "
-  echo "* The installer will install Docker, required dependencies for Wings"
-  echo "* as well as Wings itself. But it's still required to create the node"
+  echo "* The installer will install Docker, required dependencies for Elytra"
+  echo "* as well as Elytra itself. But it's still required to create the node"
   echo "* on the panel and then place the configuration file on the node manually after"
   echo "* the installation has finished. Read more about this process on the"
-  echo "* official documentation: $(hyperlink 'https://pterodactyl.io/wings/1.0/installing.html#configure')"
+  echo "* official documentation: $(hyperlink 'https://github.com/pyrohost/elytra#readme')"
   echo "* "
-  echo -e "* ${COLOR_RED}Note${COLOR_NC}: this script will not start Wings automatically (will install systemd service, not start it)."
+  echo -e "* ${COLOR_RED}Note${COLOR_NC}: this script will not start Elytra automatically (will install systemd service, not start it)."
   echo -e "* ${COLOR_RED}Note${COLOR_NC}: this script will not enable swap (for docker)."
   print_brake 42
 
   ask_firewall CONFIGURE_FIREWALL
+
+  ask_rustic
 
   ask_database_user
 
@@ -153,7 +167,7 @@ main() {
 
     MYSQL_DBHOST_USER="-"
     while [[ "$MYSQL_DBHOST_USER" == *"-"* ]]; do
-      required_input MYSQL_DBHOST_USER "Database host username (pterodactyluser): " "" "pterodactyluser"
+      required_input MYSQL_DBHOST_USER "Database host username (pyrodactyluser): " "" "pyrodactyluser"
       [[ "$MYSQL_DBHOST_USER" == *"-"* ]] && error "Database user cannot contain hyphens"
     done
 
@@ -208,21 +222,21 @@ main() {
 function goodbye {
   echo ""
   print_brake 70
-  echo "* Wings installation completed"
+  echo "* Elytra installation completed"
   echo "*"
-  echo "* To continue, you need to configure Wings to run with your panel"
-  echo "* Please refer to the official guide, $(hyperlink 'https://pterodactyl.io/wings/1.0/installing.html#configure')"
+  echo "* To continue, you need to configure Elytra to run with your panel"
+  echo "* Please refer to the official guide, $(hyperlink 'https://github.com/pyrohost/elytra#readme')"
   echo "* "
-  echo "* You can either copy the configuration file from the panel manually to /etc/pterodactyl/config.yml"
+  echo "* You can either copy the configuration file from the panel manually to /etc/elytra/config.yml"
   echo "* or, you can use the \"auto deploy\" button from the panel and simply paste the command in this terminal"
   echo "* "
-  echo "* You can then start Wings manually to verify that it's working"
+  echo "* You can then start Elytra manually to verify that it's working"
   echo "*"
-  echo "* sudo wings"
+  echo "* sudo elytra"
   echo "*"
-  echo "* Once you have verified that it is working, use CTRL+C and then start Wings as a service (runs in the background)"
+  echo "* Once you have verified that it is working, use CTRL+C and then start Elytra as a service (runs in the background)"
   echo "*"
-  echo "* systemctl start wings"
+  echo "* systemctl start elytra"
   echo "*"
   echo -e "* ${COLOR_RED}Note${COLOR_NC}: It is recommended to enable swap (for Docker, read more about it in official documentation)."
   [ "$CONFIGURE_FIREWALL" == false ] && echo -e "* ${COLOR_RED}Note${COLOR_NC}: If you haven't configured your firewall, ports 8080 and 2022 needs to be open."

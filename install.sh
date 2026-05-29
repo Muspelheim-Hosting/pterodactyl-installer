@@ -4,7 +4,7 @@ set -e
 
 ######################################################################################
 #                                                                                    #
-# Project 'pterodactyl-installer'                                                    #
+# Project 'pyrodactyl-installer'                                                     #
 #                                                                                    #
 # Copyright (C) 2018 - 2026, Vilhelm Prytz, <vilhelm@prytznet.se>                    #
 #                                                                                    #
@@ -21,18 +21,18 @@ set -e
 #   You should have received a copy of the GNU General Public License                #
 #   along with this program.  If not, see <https://www.gnu.org/licenses/>.           #
 #                                                                                    #
-# https://github.com/pterodactyl-installer/pterodactyl-installer/blob/master/LICENSE #
+# https://github.com/Muspelheim-Hosting/pterodactyl-installer/blob/master/LICENSE    #
 #                                                                                    #
-# This script is not associated with the official Pterodactyl Project.               #
-# https://github.com/pterodactyl-installer/pterodactyl-installer                     #
+# Based on pterodactyl-installer by Vilhelm Prytz. Not an official project.          #
+# https://github.com/Muspelheim-Hosting/pterodactyl-installer                        #
 #                                                                                    #
 ######################################################################################
 
-export GITHUB_SOURCE="v1.2.0"
-export SCRIPT_RELEASE="v1.2.0"
-export GITHUB_BASE_URL="https://raw.githubusercontent.com/pterodactyl-installer/pterodactyl-installer"
+export GITHUB_SOURCE="v1.0.0"
+export SCRIPT_RELEASE="v1.0.0"
+export GITHUB_BASE_URL="https://raw.githubusercontent.com/Muspelheim-Hosting/pterodactyl-installer"
 
-LOG_PATH="/var/log/pterodactyl-installer.log"
+LOG_PATH="/var/log/pyrodactyl-installer.log"
 
 # check for curl
 if ! [ -x "$(command -v curl)" ]; then
@@ -42,73 +42,16 @@ if ! [ -x "$(command -v curl)" ]; then
 fi
 
 # Always remove lib.sh, before downloading it
-[ -f /tmp/lib.sh ] && rm -rf /tmp/lib.sh
-curl -sSL -o /tmp/lib.sh "$GITHUB_BASE_URL"/master/lib/lib.sh
+[ -f /tmp/pyrodactyl-lib.sh ] && rm -rf /tmp/pyrodactyl-lib.sh
+curl -sSL -o /tmp/pyrodactyl-lib.sh "$GITHUB_BASE_URL"/master/lib/lib.sh
 # shellcheck source=lib/lib.sh
-source /tmp/lib.sh
-
-execute() {
-  echo -e "\n\n* pterodactyl-installer $(date) \n\n" >>$LOG_PATH
-
-  [[ "$1" == *"canary"* ]] && export GITHUB_SOURCE="master" && export SCRIPT_RELEASE="canary"
-  update_lib_source
-  run_ui "${1//_canary/}" |& tee -a $LOG_PATH
-
-  if [[ -n $2 ]]; then
-    echo -e -n "* Installation of $1 completed. Do you want to proceed to $2 installation? (y/N): "
-    read -r CONFIRM
-    if [[ "$CONFIRM" =~ [Yy] ]]; then
-      execute "$2"
-    else
-      error "Installation of $2 aborted."
-      exit 1
-    fi
-  fi
-}
+source /tmp/pyrodactyl-lib.sh
 
 welcome ""
 
-done=false
-while [ "$done" == false ]; do
-  options=(
-    "Install the panel"
-    "Install Wings"
-    "Install both [0] and [1] on the same machine (wings script runs after panel)"
-    # "Uninstall panel or wings\n"
-
-    "Install panel with canary version of the script (the versions that lives in master, may be broken!)"
-    "Install Wings with canary version of the script (the versions that lives in master, may be broken!)"
-    "Install both [3] and [4] on the same machine (wings script runs after panel)"
-    "Uninstall panel or wings with canary version of the script (the versions that lives in master, may be broken!)"
-  )
-
-  actions=(
-    "panel"
-    "wings"
-    "panel;wings"
-    # "uninstall"
-
-    "panel_canary"
-    "wings_canary"
-    "panel_canary;wings_canary"
-    "uninstall_canary"
-  )
-
-  output "What would you like to do?"
-
-  for i in "${!options[@]}"; do
-    output "[$i] ${options[$i]}"
-  done
-
-  echo -n "* Input 0-$((${#actions[@]} - 1)): "
-  read -r action
-
-  [ -z "$action" ] && error "Input is required" && continue
-
-  valid_input=("$(for ((i = 0; i <= ${#actions[@]} - 1; i += 1)); do echo "${i}"; done)")
-  [[ ! " ${valid_input[*]} " =~ ${action} ]] && error "Invalid option"
-  [[ " ${valid_input[*]} " =~ ${action} ]] && done=true && IFS=";" read -r i1 i2 <<<"${actions[$action]}" && execute "$i1" "$i2"
-done
+# The menu (and the execute/run logic) lives in lib/lib.sh so install.sh and the
+# interactive Vagrant test driver share a single definition.
+main_menu
 
 # Remove lib.sh, so next time the script is run the, newest version is downloaded.
-rm -rf /tmp/lib.sh
+rm -rf /tmp/pyrodactyl-lib.sh

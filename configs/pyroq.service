@@ -1,9 +1,11 @@
-# Pterodactyl Queue Worker File
+# Pyrodactyl Queue Worker File
 # ----------------------------------
 
 [Unit]
-Description=Pterodactyl Queue Worker
+Description=Pyrodactyl Queue Worker
 After=redis-server.service
+StartLimitIntervalSec=180
+StartLimitBurst=30
 
 [Service]
 # On some systems the user and group might be different.
@@ -11,9 +13,7 @@ After=redis-server.service
 User=<user>
 Group=<user>
 Restart=always
-ExecStart=/usr/bin/php /var/www/pterodactyl/artisan queue:work --queue=high,standard,low --sleep=3 --tries=3
-StartLimitInterval=180
-StartLimitBurst=30
+ExecStart=/usr/bin/php /var/www/pyrodactyl/artisan queue:work --queue=high,standard,low --sleep=3 --tries=3
 RestartSec=5s
 
 [Install]

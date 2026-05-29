@@ -4,7 +4,7 @@ set -e
 
 ######################################################################################
 #                                                                                    #
-# Project 'pterodactyl-installer'                                                    #
+# Project 'pyrodactyl-installer'                                                     #
 #                                                                                    #
 # Copyright (C) 2018 - 2026, Vilhelm Prytz, <vilhelm@prytznet.se>                    #
 #                                                                                    #
@@ -21,10 +21,10 @@ set -e
 #   You should have received a copy of the GNU General Public License                #
 #   along with this program.  If not, see <https://www.gnu.org/licenses/>.           #
 #                                                                                    #
-# https://github.com/pterodactyl-installer/pterodactyl-installer/blob/master/LICENSE #
+# https://github.com/Muspelheim-Hosting/pterodactyl-installer/blob/master/LICENSE    #
 #                                                                                    #
-# This script is not associated with the official Pterodactyl Project.               #
-# https://github.com/pterodactyl-installer/pterodactyl-installer                     #
+# Based on pterodactyl-installer by Vilhelm Prytz. Not an official project.          #
+# https://github.com/Muspelheim-Hosting/pterodactyl-installer                        #
 #                                                                                    #
 ######################################################################################
 
@@ -34,9 +34,12 @@ set -e
 export GITHUB_SOURCE=${GITHUB_SOURCE:-master}
 export SCRIPT_RELEASE=${SCRIPT_RELEASE:-canary}
 
-# Pterodactyl versions
-export PTERODACTYL_PANEL_VERSION=""
-export PTERODACTYL_WINGS_VERSION=""
+# Pyrodactyl / Elytra versions
+export PYRODACTYL_PANEL_VERSION=""
+export ELYTRA_VERSION=""
+
+# PHP version installed for the panel (Pyrodactyl's composer.lock requires >= 8.4)
+export PHP_VERSION="8.4"
 
 # Path (export everything that is possible, doesn't matter that it exists already)
 export PATH="$PATH:/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin"
@@ -49,11 +52,17 @@ export ARCH=""
 export SUPPORTED=false
 
 # download URLs
-export PANEL_DL_URL="https://github.com/pterodactyl/panel/releases/latest/download/panel.tar.gz"
-export WINGS_DL_BASE_URL="https://github.com/pterodactyl/wings/releases/latest/download/wings_linux_"
+export PANEL_DL_URL="https://github.com/pyrodactyl-oss/pyrodactyl/releases/latest/download/panel.tar.gz"
+# Pyrodactyl release tarballs do not bundle .env.example; it is fetched from the repo
+export PANEL_ENV_EXAMPLE_URL="https://raw.githubusercontent.com/pyrodactyl-oss/pyrodactyl/main/.env.example"
+export ELYTRA_DL_BASE_URL="https://github.com/pyrohost/elytra/releases/latest/download/elytra_linux_"
 export MARIADB_URL="https://downloads.mariadb.com/MariaDB/mariadb_repo_setup"
-export GITHUB_BASE_URL=${GITHUB_BASE_URL:-"https://raw.githubusercontent.com/pterodactyl-installer/pterodactyl-installer"}
-export GITHUB_URL="$GITHUB_BASE_URL/$GITHUB_SOURCE"
+export GITHUB_BASE_URL=${GITHUB_BASE_URL:-"https://raw.githubusercontent.com/Muspelheim-Hosting/pterodactyl-installer"}
+# Honor a preset GITHUB_URL (e.g. a file:// path for local Vagrant testing); otherwise derive it
+export GITHUB_URL="${GITHUB_URL:-$GITHUB_BASE_URL/$GITHUB_SOURCE}"
+
+# Install log (override before sourcing to change it)
+export LOG_PATH="${LOG_PATH:-/var/log/pyrodactyl-installer.log}"
 
 # Colors
 COLOR_YELLOW='\033[1;33m'
@@ -122,18 +131,19 @@ welcome() {
   get_latest_versions
 
   print_brake 70
-  output "Pterodactyl panel installation script @ $SCRIPT_RELEASE"
+  output "Pyrodactyl panel installation script @ $SCRIPT_RELEASE"
   output ""
   output "Copyright (C) 2018 - 2026, Vilhelm Prytz, <vilhelm@prytznet.se>"
-  output "https://github.com/pterodactyl-installer/pterodactyl-installer"
+  output "Based on pterodactyl-installer by Vilhelm Prytz."
+  output "https://github.com/Muspelheim-Hosting/pterodactyl-installer"
   output ""
-  output "This script is not associated with the official Pterodactyl Project."
+  output "This script is not associated with the official Pyrodactyl or Pterodactyl Project."
   output ""
   output "Running $OS version $OS_VER."
   if [ "$1" == "panel" ]; then
-    output "Latest pterodactyl/panel is $PTERODACTYL_PANEL_VERSION"
+    output "Latest pyrodactyl-oss/pyrodactyl is $PYRODACTYL_PANEL_VERSION"
   elif [ "$1" == "wings" ]; then
-    output "Latest pterodactyl/wings is $PTERODACTYL_WINGS_VERSION"
+    output "Latest pyrohost/elytra is $ELYTRA_VERSION"
   fi
   print_brake 70
 }
@@ -148,16 +158,22 @@ get_latest_release() {
 
 get_latest_versions() {
   output "Retrieving release information..."
-  PTERODACTYL_PANEL_VERSION=$(get_latest_release "pterodactyl/panel")
-  PTERODACTYL_WINGS_VERSION=$(get_latest_release "pterodactyl/wings")
+  PYRODACTYL_PANEL_VERSION=$(get_latest_release "pyrodactyl-oss/pyrodactyl")
+  ELYTRA_VERSION=$(get_latest_release "pyrohost/elytra")
 }
 
 update_lib_source() {
+  # Local checkout (file:// URL, e.g. Vagrant testing): the lib is already current
+  # via the /tmp symlink, so don't recompute the URL or re-download over the network.
+  case "$GITHUB_URL" in
+  file://*) return 0 ;;
+  esac
+
   GITHUB_URL="$GITHUB_BASE_URL/$GITHUB_SOURCE"
-  rm -rf /tmp/lib.sh
-  curl -sSL -o /tmp/lib.sh "$GITHUB_URL"/lib/lib.sh
+  rm -rf /tmp/pyrodactyl-lib.sh
+  curl -sSL -o /tmp/pyrodactyl-lib.sh "$GITHUB_URL"/lib/lib.sh
   # shellcheck source=lib/lib.sh
-  source /tmp/lib.sh
+  source /tmp/pyrodactyl-lib.sh
 }
 
 run_installer() {
@@ -166,6 +182,75 @@ run_installer() {
 
 run_ui() {
   bash <(curl -sSL "$GITHUB_URL/ui/$1.sh")
+}
+
+# Run a single menu action (e.g. "panel", "wings", "panel_canary"). A second
+# argument chains a follow-up action (used by the "install both" options).
+execute() {
+  echo -e "\n\n* pyrodactyl-installer $(date) \n\n" >>"$LOG_PATH"
+
+  [[ "$1" == *"canary"* ]] && export GITHUB_SOURCE="master" && export SCRIPT_RELEASE="canary"
+  update_lib_source
+  run_ui "${1//_canary/}" |& tee -a "$LOG_PATH"
+
+  if [[ -n "${2:-}" ]]; then
+    echo -e -n "* Installation of $1 completed. Do you want to proceed to $2 installation? (y/N): "
+    read -r CONFIRM
+    if [[ "$CONFIRM" =~ [Yy] ]]; then
+      execute "$2"
+    else
+      error "Installation of $2 aborted."
+      exit 1
+    fi
+  fi
+}
+
+# The single source of truth for the installer's main menu. Used by both
+# install.sh and the interactive Vagrant test driver.
+main_menu() {
+  local done=false
+  local options actions valid_input action i i1 i2
+
+  while [ "$done" == false ]; do
+    options=(
+      "Install the Pyrodactyl panel"
+      "Install Elytra (daemon)"
+      "Install both [0] and [1] on the same machine (Elytra runs after panel)"
+      # "Uninstall panel or Elytra\n"
+
+      "Install panel with canary version of the script (the versions that lives in master, may be broken!)"
+      "Install Elytra with canary version of the script (the versions that lives in master, may be broken!)"
+      "Install both [3] and [4] on the same machine (Elytra runs after panel)"
+      "Uninstall panel or Elytra with canary version of the script (the versions that lives in master, may be broken!)"
+    )
+
+    actions=(
+      "panel"
+      "wings"
+      "panel;wings"
+      # "uninstall"
+
+      "panel_canary"
+      "wings_canary"
+      "panel_canary;wings_canary"
+      "uninstall_canary"
+    )
+
+    output "What would you like to do?"
+
+    for i in "${!options[@]}"; do
+      output "[$i] ${options[$i]}"
+    done
+
+    echo -n "* Input 0-$((${#actions[@]} - 1)): "
+    read -r action
+
+    [ -z "$action" ] && error "Input is required" && continue
+
+    valid_input=("$(for ((i = 0; i <= ${#actions[@]} - 1; i += 1)); do echo "${i}"; done)")
+    [[ ! " ${valid_input[*]} " =~ ${action} ]] && error "Invalid option"
+    [[ " ${valid_input[*]} " =~ ${action} ]] && done=true && IFS=";" read -r i1 i2 <<<"${actions[$action]}" && execute "$i1" "$i2"
+  done
 }
 
 array_contains_element() {

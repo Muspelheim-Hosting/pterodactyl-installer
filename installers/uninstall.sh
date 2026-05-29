@@ -4,7 +4,7 @@ set -e
 
 ######################################################################################
 #                                                                                    #
-# Project 'pterodactyl-installer'                                                    #
+# Project 'pyrodactyl-installer'                                                     #
 #                                                                                    #
 # Copyright (C) 2018 - 2026, Vilhelm Prytz, <vilhelm@prytznet.se>                    #
 #                                                                                    #
@@ -21,10 +21,10 @@ set -e
 #   You should have received a copy of the GNU General Public License                #
 #   along with this program.  If not, see <https://www.gnu.org/licenses/>.           #
 #                                                                                    #
-# https://github.com/pterodactyl-installer/pterodactyl-installer/blob/master/LICENSE #
+# https://github.com/Muspelheim-Hosting/pterodactyl-installer/blob/master/LICENSE    #
 #                                                                                    #
-# This script is not associated with the official Pterodactyl Project.               #
-# https://github.com/pterodactyl-installer/pterodactyl-installer                     #
+# Based on pterodactyl-installer by Vilhelm Prytz. Not an official project.          #
+# https://github.com/Muspelheim-Hosting/pterodactyl-installer                        #
 #                                                                                    #
 ######################################################################################
 
@@ -32,7 +32,7 @@ set -e
 fn_exists() { declare -F "$1" >/dev/null; }
 if ! fn_exists lib_loaded; then
   # shellcheck source=lib/lib.sh
-  source /tmp/lib.sh || source <(curl -sSL "$GITHUB_BASE_URL/$GITHUB_SOURCE"/lib/lib.sh)
+  source /tmp/pyrodactyl-lib.sh || source <(curl -sSL "$GITHUB_BASE_URL/$GITHUB_SOURCE"/lib/lib.sh)
   ! fn_exists lib_loaded && echo "* ERROR: Could not load lib script" && exit 1
 fi
 
@@ -45,11 +45,11 @@ RM_WINGS="${RM_WINGS:-true}"
 
 rm_panel_files() {
   output "Removing panel files..."
-  rm -rf /var/www/pterodactyl /usr/local/bin/composer
-  [ "$OS" != "centos" ] && [ -L /etc/nginx/sites-enabled/pterodactyl.conf ] && unlink /etc/nginx/sites-enabled/pterodactyl.conf
-  [ "$OS" != "centos" ] && [ -f /etc/nginx/sites-available/pterodactyl.conf ] && rm -f /etc/nginx/sites-available/pterodactyl.conf
+  rm -rf /var/www/pyrodactyl /usr/local/bin/composer
+  [ "$OS" != "centos" ] && [ -L /etc/nginx/sites-enabled/pyrodactyl.conf ] && unlink /etc/nginx/sites-enabled/pyrodactyl.conf
+  [ "$OS" != "centos" ] && [ -f /etc/nginx/sites-available/pyrodactyl.conf ] && rm -f /etc/nginx/sites-available/pyrodactyl.conf
   [ "$OS" != "centos" ] && [ ! -L /etc/nginx/sites-enabled/default ] && [ -f /etc/nginx/sites-available/default ] && ln -s /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
-  [ "$OS" == "centos" ] && [ -f /etc/nginx/conf.d/pterodactyl.conf ] && rm -f /etc/nginx/conf.d/pterodactyl.conf
+  [ "$OS" == "centos" ] && [ -f /etc/nginx/conf.d/pyrodactyl.conf ] && rm -f /etc/nginx/conf.d/pyrodactyl.conf
   systemctl restart nginx
   success "Removed panel files."
 }
@@ -63,21 +63,21 @@ rm_docker_containers() {
 }
 
 rm_wings_files() {
-  output "Removing wings files..."
+  output "Removing Elytra files..."
 
-  systemctl disable --now wings
-  [ -f /etc/systemd/system/wings.service ] && rm -rf /etc/systemd/system/wings.service
+  systemctl disable --now elytra
+  [ -f /etc/systemd/system/elytra.service ] && rm -rf /etc/systemd/system/elytra.service
 
-  [ -d /etc/pterodactyl ] && rm -rf /etc/pterodactyl
-  [ -f /usr/local/bin/wings ] && rm -rf /usr/local/bin/wings
-  [ -d /var/lib/pterodactyl ] && rm -rf /var/lib/pterodactyl
-  success "Removed wings files."
+  [ -d /etc/elytra ] && rm -rf /etc/elytra
+  [ -f /usr/local/bin/elytra ] && rm -rf /usr/local/bin/elytra
+  [ -d /var/lib/elytra ] && rm -rf /var/lib/elytra
+  success "Removed Elytra files."
 }
 
 rm_services() {
   output "Removing services..."
-  systemctl disable --now pteroq
-  rm -rf /etc/systemd/system/pteroq.service
+  systemctl disable --now pyroq
+  rm -rf /etc/systemd/system/pyroq.service
   case "$OS" in
   debian | ubuntu)
     systemctl disable --now redis-server
@@ -85,7 +85,7 @@ rm_services() {
   centos)
     systemctl disable --now redis
     systemctl disable --now php-fpm
-    rm -rf /etc/php-fpm.d/www-pterodactyl.conf
+    rm -rf /etc/php-fpm.d/www-pyrodactyl.conf
     ;;
   esac
   success "Removed services."
@@ -93,7 +93,7 @@ rm_services() {
 
 rm_cron() {
   output "Removing cron jobs..."
-  crontab -l | grep -vF "* * * * * php /var/www/pterodactyl/artisan schedule:run >> /dev/null 2>&1" | crontab -
+  crontab -l | grep -vF "* * * * * php /var/www/pyrodactyl/artisan schedule:run >> /dev/null 2>&1" | crontab -
   success "Removed cron jobs."
 }
 
@@ -107,7 +107,7 @@ rm_database() {
 
   warning "Be careful! This database will be deleted!"
   if [[ "$valid_db" == *"panel"* ]]; then
-    echo -n "* Database called panel has been detected. Is it the pterodactyl database? (y/N): "
+    echo -n "* Database called panel has been detected. Is it the pyrodactyl database? (y/N): "
     read -r is_panel
     if [[ "$is_panel" =~ [Yy] ]]; then
       DATABASE=panel
@@ -147,11 +147,11 @@ rm_database() {
   fi
 
   warning "Be careful! This user will be deleted!"
-  if [[ "$valid_users" == *"pterodactyl"* ]]; then
-    echo -n "* User called pterodactyl has been detected. Is it the pterodactyl user? (y/N): "
+  if [[ "$valid_users" == *"pyrodactyl"* ]]; then
+    echo -n "* User called pyrodactyl has been detected. Is it the pyrodactyl user? (y/N): "
     read -r is_user
     if [[ "$is_user" =~ [Yy] ]]; then
-      DB_USER=pterodactyl
+      DB_USER=pyrodactyl
     else
       print_list "$valid_users"
     fi

@@ -4,7 +4,7 @@ set -e
 
 ######################################################################################
 #                                                                                    #
-# Project 'pterodactyl-installer'                                                    #
+# Project 'pyrodactyl-installer'                                                     #
 #                                                                                    #
 # Copyright (C) 2018 - 2026, Vilhelm Prytz, <vilhelm@prytznet.se>                    #
 #                                                                                    #
@@ -21,10 +21,10 @@ set -e
 #   You should have received a copy of the GNU General Public License                #
 #   along with this program.  If not, see <https://www.gnu.org/licenses/>.           #
 #                                                                                    #
-# https://github.com/pterodactyl-installer/pterodactyl-installer/blob/master/LICENSE #
+# https://github.com/Muspelheim-Hosting/pterodactyl-installer/blob/master/LICENSE    #
 #                                                                                    #
-# This script is not associated with the official Pterodactyl Project.               #
-# https://github.com/pterodactyl-installer/pterodactyl-installer                     #
+# Based on pterodactyl-installer by Vilhelm Prytz. Not an official project.          #
+# https://github.com/Muspelheim-Hosting/pterodactyl-installer                        #
 #                                                                                    #
 ######################################################################################
 
@@ -32,7 +32,7 @@ set -e
 fn_exists() { declare -F "$1" >/dev/null; }
 if ! fn_exists lib_loaded; then
   # shellcheck source=lib/lib.sh
-  source /tmp/lib.sh || source <(curl -sSL "$GITHUB_BASE_URL/$GITHUB_SOURCE"/lib/lib.sh)
+  source /tmp/pyrodactyl-lib.sh || source <(curl -sSL "$GITHUB_BASE_URL/$GITHUB_SOURCE"/lib/lib.sh)
   ! fn_exists lib_loaded && echo "* ERROR: Could not load lib script" && exit 1
 fi
 
@@ -43,7 +43,7 @@ FQDN="${FQDN:-localhost}"
 
 # Default MySQL credentials
 MYSQL_DB="${MYSQL_DB:-panel}"
-MYSQL_USER="${MYSQL_USER:-pterodactyl}"
+MYSQL_USER="${MYSQL_USER:-pyrodactyl}"
 MYSQL_PASSWORD="${MYSQL_PASSWORD:-$(gen_passwd 64)}"
 
 # Environment
@@ -88,25 +88,65 @@ install_composer() {
   success "Composer installed!"
 }
 
-ptdl_dl() {
-  output "Downloading pterodactyl panel files .. "
-  mkdir -p /var/www/pterodactyl
-  cd /var/www/pterodactyl || exit
+pyro_dl() {
+  output "Downloading Pyrodactyl panel files .. "
+  mkdir -p /var/www/pyrodactyl
+  cd /var/www/pyrodactyl || exit
 
   curl -Lo panel.tar.gz "$PANEL_DL_URL"
   tar -xzvf panel.tar.gz
   chmod -R 755 storage/* bootstrap/cache/
 
+  # Pyrodactyl release tarballs do not include .env.example; fetch it from the repo if absent
+  if [ ! -f .env.example ]; then
+    output "Fetching .env.example from the Pyrodactyl repository.. "
+    curl -fsSL -o .env.example "$PANEL_ENV_EXAMPLE_URL"
+  fi
+
   cp .env.example .env
 
-  success "Downloaded pterodactyl panel files!"
+  success "Downloaded Pyrodactyl panel files!"
 }
 
 install_composer_deps() {
   output "Installing composer dependencies.."
   [ "$OS" == "rocky" ] || [ "$OS" == "almalinux" ] && export PATH=/usr/local/bin:$PATH
-  COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader
+  COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader --no-interaction
   success "Installed composer dependencies!"
+}
+
+# Pyrodactyl ships an unbuilt React/Vite frontend; the panel must be built from
+# source (unlike Pterodactyl, whose release tarball shipped prebuilt assets).
+build_panel_assets() {
+  output "Installing Node.js and pnpm.."
+
+  # Pyrodactyl requires Node.js >= 20
+  case "$OS" in
+  ubuntu | debian)
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    install_packages "nodejs"
+    ;;
+  rocky | almalinux)
+    curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+    install_packages "nodejs"
+    ;;
+  esac
+
+  npm install -g pnpm
+  local npm_prefix
+  npm_prefix="$(npm config get prefix)"
+  export PATH="$PATH:$npm_prefix/bin"
+
+  cd /var/www/pyrodactyl || exit
+  warning "Building the frontend can use a lot of memory; ensure the machine has enough RAM (or swap) or the build may fail."
+
+  output "Installing frontend dependencies.."
+  pnpm install
+
+  output "Building frontend assets (this might take a while).."
+  pnpm build
+
+  success "Built Pyrodactyl frontend assets!"
 }
 
 # Configure environment
@@ -118,10 +158,10 @@ configure() {
   [ "$CONFIGURE_LETSENCRYPT" == true ] && app_url="https://$FQDN"
 
   # Generate encryption key
-  php artisan key:generate --force
+  php artisan key:generate --force -n </dev/null
 
   # Fill in environment:setup automatically
-  php artisan p:environment:setup \
+  php artisan p:environment:setup -n \
     --author="$email" \
     --url="$app_url" \
     --timezone="$timezone" \
@@ -131,27 +171,27 @@ configure() {
     --redis-host="localhost" \
     --redis-pass="null" \
     --redis-port="6379" \
-    --settings-ui=true
+    --settings-ui=true </dev/null
 
   # Fill in environment:database credentials automatically
-  php artisan p:environment:database \
+  php artisan p:environment:database -n \
     --host="127.0.0.1" \
     --port="3306" \
     --database="$MYSQL_DB" \
     --username="$MYSQL_USER" \
-    --password="$MYSQL_PASSWORD"
+    --password="$MYSQL_PASSWORD" </dev/null
 
   # configures database
-  php artisan migrate --seed --force
+  php artisan migrate --seed --force -n </dev/null
 
   # Create user account
-  php artisan p:user:make \
+  php artisan p:user:make -n \
     --email="$user_email" \
     --username="$user_username" \
     --name-first="$user_firstname" \
     --name-last="$user_lastname" \
     --password="$user_password" \
-    --admin=1
+    --admin=1 </dev/null
 
   success "Configured environment!"
 }
@@ -174,30 +214,30 @@ insert_cronjob() {
 
   crontab -l | {
     cat
-    output "* * * * php /var/www/pterodactyl/artisan schedule:run >> /dev/null 2>&1"
+    output "* * * * php /var/www/pyrodactyl/artisan schedule:run >> /dev/null 2>&1"
   } | crontab -
 
   success "Cronjob installed!"
 }
 
-install_pteroq() {
-  output "Installing pteroq service.."
+install_pyroq() {
+  output "Installing pyroq service.."
 
-  curl -o /etc/systemd/system/pteroq.service "$GITHUB_URL"/configs/pteroq.service
+  curl -o /etc/systemd/system/pyroq.service "$GITHUB_URL"/configs/pyroq.service
 
   case "$OS" in
   debian | ubuntu)
-    sed -i -e "s@<user>@www-data@g" /etc/systemd/system/pteroq.service
+    sed -i -e "s@<user>@www-data@g" /etc/systemd/system/pyroq.service
     ;;
   rocky | almalinux)
-    sed -i -e "s@<user>@nginx@g" /etc/systemd/system/pteroq.service
+    sed -i -e "s@<user>@nginx@g" /etc/systemd/system/pyroq.service
     ;;
   esac
 
-  systemctl enable pteroq.service
-  systemctl start pteroq
+  systemctl enable pyroq.service
+  systemctl start pyroq
 
-  success "Installed pteroq!"
+  success "Installed pyroq!"
 }
 
 # -------- OS specific install functions ------- #
@@ -225,7 +265,7 @@ selinux_allow() {
 }
 
 php_fpm_conf() {
-  curl -o /etc/php-fpm.d/www-pterodactyl.conf "$GITHUB_URL"/configs/www-pterodactyl.conf
+  curl -o /etc/php-fpm.d/www-pyrodactyl.conf "$GITHUB_URL"/configs/www-pyrodactyl.conf
 
   systemctl enable php-fpm
   systemctl start php-fpm
@@ -238,7 +278,7 @@ ubuntu_dep() {
   # Add Ubuntu universe repo
   add-apt-repository universe -y
 
-  # Add PPA for PHP (we need 8.3)
+  # Add PPA for PHP (we need $PHP_VERSION)
   LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php
 }
 
@@ -246,7 +286,7 @@ debian_dep() {
   # Install deps for adding repos
   install_packages "dirmngr ca-certificates apt-transport-https lsb-release"
 
-  # Install PHP 8.3 using sury's repo
+  # Install PHP $PHP_VERSION using sury's repo
   curl -o /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg
   echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" | tee /etc/apt/sources.list.d/php.list
 }
@@ -256,9 +296,9 @@ alma_rocky_dep() {
   install_packages "policycoreutils selinux-policy selinux-policy-targeted \
     setroubleshoot-server setools setools-console mcstrans"
 
-  # add remi repo (php8.3)
+  # add remi repo (php$PHP_VERSION)
   install_packages "epel-release http://rpms.remirepo.net/enterprise/remi-release-$OS_VER_MAJOR.rpm"
-  dnf module enable -y php:remi-8.3
+  dnf module enable -y php:remi-"$PHP_VERSION"
 }
 
 dep_install() {
@@ -277,7 +317,7 @@ dep_install() {
     update_repos
 
     # Install dependencies
-    install_packages "php8.3 php8.3-{cli,common,gd,mysql,mbstring,bcmath,xml,fpm,curl,zip} \
+    install_packages "php$PHP_VERSION php$PHP_VERSION-{cli,common,gd,mysql,mbstring,bcmath,xml,fpm,curl,zip,intl,redis,tokenizer} \
       mariadb-common mariadb-server mariadb-client \
       nginx \
       redis-server \
@@ -291,7 +331,7 @@ dep_install() {
     alma_rocky_dep
 
     # Install dependencies
-    install_packages "php php-{common,fpm,cli,json,mysqlnd,mcrypt,gd,mbstring,pdo,zip,bcmath,dom,opcache,posix} \
+    install_packages "php php-{common,fpm,cli,json,mysqlnd,mcrypt,gd,mbstring,pdo,zip,bcmath,dom,opcache,posix,intl,redis} \
       mariadb mariadb-server \
       nginx \
       redis \
@@ -363,12 +403,12 @@ configure_nginx() {
 
   case "$OS" in
   ubuntu | debian)
-    PHP_SOCKET="/run/php/php8.3-fpm.sock"
+    PHP_SOCKET="/run/php/php$PHP_VERSION-fpm.sock"
     CONFIG_PATH_AVAIL="/etc/nginx/sites-available"
     CONFIG_PATH_ENABL="/etc/nginx/sites-enabled"
     ;;
   rocky | almalinux)
-    PHP_SOCKET="/var/run/php-fpm/pterodactyl.sock"
+    PHP_SOCKET="/var/run/php-fpm/pyrodactyl.sock"
     CONFIG_PATH_AVAIL="/etc/nginx/conf.d"
     CONFIG_PATH_ENABL="$CONFIG_PATH_AVAIL"
     ;;
@@ -376,15 +416,15 @@ configure_nginx() {
 
   rm -rf "$CONFIG_PATH_ENABL"/default
 
-  curl -o "$CONFIG_PATH_AVAIL"/pterodactyl.conf "$GITHUB_URL"/configs/$DL_FILE
+  curl -o "$CONFIG_PATH_AVAIL"/pyrodactyl.conf "$GITHUB_URL"/configs/$DL_FILE
 
-  sed -i -e "s@<domain>@${FQDN}@g" "$CONFIG_PATH_AVAIL"/pterodactyl.conf
+  sed -i -e "s@<domain>@${FQDN}@g" "$CONFIG_PATH_AVAIL"/pyrodactyl.conf
 
-  sed -i -e "s@<php_socket>@${PHP_SOCKET}@g" "$CONFIG_PATH_AVAIL"/pterodactyl.conf
+  sed -i -e "s@<php_socket>@${PHP_SOCKET}@g" "$CONFIG_PATH_AVAIL"/pyrodactyl.conf
 
   case "$OS" in
   ubuntu | debian)
-    ln -sf "$CONFIG_PATH_AVAIL"/pterodactyl.conf "$CONFIG_PATH_ENABL"/pterodactyl.conf
+    ln -sf "$CONFIG_PATH_AVAIL"/pyrodactyl.conf "$CONFIG_PATH_ENABL"/pyrodactyl.conf
     ;;
   esac
 
@@ -401,14 +441,15 @@ perform_install() {
   output "Starting installation.. this might take a while!"
   dep_install
   install_composer
-  ptdl_dl
+  pyro_dl
   install_composer_deps
+  build_panel_assets
   create_db_user "$MYSQL_USER" "$MYSQL_PASSWORD"
   create_db "$MYSQL_DB" "$MYSQL_USER"
   configure
   set_folder_permissions
   insert_cronjob
-  install_pteroq
+  install_pyroq
   configure_nginx
   [ "$CONFIGURE_LETSENCRYPT" == true ] && letsencrypt
 
