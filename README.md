@@ -9,10 +9,13 @@ This project is a fork of [pterodactyl-installer](https://github.com/pterodactyl
 
 ## Features
 
-- Automatic installation of the Pyrodactyl Panel (dependencies, database, cronjob, nginx).
-- Automatic installation of Elytra (Docker, systemd).
-- Panel: (optional) automatic configuration of Let's Encrypt.
-- Panel: (optional) automatic configuration of firewall.
+- Automatic installation of the Pyrodactyl Panel (dependencies, database, cronjob, nginx, PHP 8.4, frontend build).
+- Automatic installation of Elytra (Docker, systemd, optional [rustic](https://github.com/rustic-rs/rustic) backups).
+- **Local / no-SSL install that works out of the box** — decline SSL and the panel is served over `http://<your-server-ip>` with no FQDN required.
+- **Single-machine "both"** — when the panel and Elytra are installed together, the node and Elytra config are created automatically (no manual panel setup).
+- **Separate machines** — configure Elytra against a remote panel with just a panel URL + API key (the panel installer generates one for you).
+- Panel: (optional) automatic Let's Encrypt, firewall, [phpMyAdmin](https://www.phpmyadmin.net/) (port 8081), and a sample Minecraft server.
+- A detailed summary at the end of the install (URL, login, database, API key, service status, next steps).
 - Uninstallation support for both panel and Elytra.
 
 ## Supported installations
@@ -79,6 +82,7 @@ vagrant up <name>
 
 Replace name with one of the following (supported installations).
 
+- `ubuntu_noble`
 - `ubuntu_jammy`
 - `debian_bullseye`
 - `debian_buster`
@@ -89,7 +93,34 @@ Replace name with one of the following (supported installations).
 - `rockylinux_8`
 - `rockylinux_9`
 
-Then you can use `vagrant ssh <name of machine>` to SSH into the box. The project directory will be mounted in `/vagrant` so you can quickly modify the script locally and then test the changes by running the script from `/vagrant/installers/panel.sh` and `/vagrant/installers/wings.sh` respectively.
+The project directory is mounted at `/vagrant` inside the box, so your local (un-pushed) changes are used directly. There are two ways to exercise the installer:
+
+#### Headless install test
+
+Runs the full install non-interactively (everything fed via env vars, no prompts):
+
+```bash
+vagrant up ubuntu_noble
+vagrant provision ubuntu_noble --provision-with test-install
+```
+
+Override the target with `TEST_TARGET` (`panel` | `wings` | `both`, default `both`), e.g.:
+
+```bash
+TEST_TARGET=panel vagrant provision ubuntu_noble --provision-with test-install
+```
+
+#### Interactive test
+
+Walks the real menu and every prompt (SSL, FQDN, phpMyAdmin, node setup) — exactly what a user sees — while still reading everything from `/vagrant`. It needs a real terminal, so SSH in and run it:
+
+```bash
+vagrant up ubuntu_noble
+vagrant ssh ubuntu_noble
+sudo bash /vagrant/scripts/vagrant/vagrant_test_interactive.sh
+```
+
+After install, find the VM's IP with `ip -4 addr` and open `http://<vm-ip>/` from your host to reach the panel.
 
 ### Creating a release
 
