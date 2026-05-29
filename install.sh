@@ -32,7 +32,8 @@ export GITHUB_SOURCE="v1.0.0"
 export SCRIPT_RELEASE="v1.0.0"
 export GITHUB_BASE_URL="https://raw.githubusercontent.com/Muspelheim-Hosting/pterodactyl-installer"
 
-LOG_PATH="/var/log/pyrodactyl-installer.log"
+# shellcheck disable=SC2034  # consumed by lib/lib.sh (execute/main_menu) after sourcing
+export LOG_PATH="/var/log/pyrodactyl-installer.log"
 
 # check for curl
 if ! [ -x "$(command -v curl)" ]; then

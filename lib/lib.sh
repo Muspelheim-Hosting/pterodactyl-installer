@@ -325,6 +325,7 @@ generate_api_key() {
   [ -f "$dir/artisan" ] || return 1
 
   local key
+  # shellcheck disable=SC2016  # the $-vars below are PHP, not shell — keep them literal
   key=$(cd "$dir" && php artisan tinker --execute='
     use Pterodactyl\Models\ApiKey;
     use Pterodactyl\Models\User;
